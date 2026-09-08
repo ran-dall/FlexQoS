@@ -8,6 +8,7 @@ cd "$MISE_PROJECT_ROOT"
 checks=(
   check-pr-source
   shellcheck
+  test-iptables
   actionlint
 )
 

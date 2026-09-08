@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run iptables rule generation and validation regression tests"
+
+set -euo pipefail
+
+cd "$MISE_PROJECT_ROOT"
+bats tests/test-iptables-rules.bats

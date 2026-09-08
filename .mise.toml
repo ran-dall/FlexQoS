@@ -1,3 +1,4 @@
 [tools]
 actionlint = "latest"
+bats = "latest"
 shellcheck = "latest"
