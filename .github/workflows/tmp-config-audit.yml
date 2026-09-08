@@ -1,0 +1,54 @@
+name: Strict config serialization audit
+
+on:
+  push:
+    branches: [chatgpt-config-audit]
+    paths:
+      - '.github/tmp-config-hardening.py'
+      - '.github/workflows/tmp-config-audit.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply config hardening and tests
+        run: python3 .github/tmp-config-hardening.py
+
+      - name: Validate whitespace
+        run: git diff --check 50e9fa7c80e2f662d8f3fe3ba1ba7486eb64f502
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats shellcheck
+          npm install --global eslint@latest
+
+      - name: Run full gate
+        run: |
+          shellcheck -s sh flexqos.sh
+          MISE_PROJECT_ROOT="$PWD" .mise/tasks/lint-webui
+          bats tests/test-config.bats
+          bats tests/test-iptables-rules.bats
+          bats tests/test-schedule.bats
+          bats tests/test-tc.bats
+          MISE_PROJECT_ROOT="$PWD" .mise/tasks/test-webui
+          mkdir -p /tmp/actionlint
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /tmp/actionlint
+          /tmp/actionlint/actionlint .github/workflows/*.yml
+
+      - name: Create final config commit
+        run: |
+          rm -f .github/tmp-config-hardening.py .github/workflows/tmp-config-audit.yml
+          git config user.name "Randall"
+          git config user.email "17261190+ran-dall@users.noreply.github.com"
+          git reset --soft 50e9fa7c80e2f662d8f3fe3ba1ba7486eb64f502
+          git add -A
+          git commit -m "fix(config): validate persisted QoS settings" -m "Validate current and legacy bandwidth matrices before use, preserve malformed legacy data instead of destructively migrating it, canonicalize valid legacy migration side effects, and whitelist flow-cache control modes. Add strict Bats coverage for defaults, precedence, malformed input, migration ordering, and recovery behavior."
+          git push origin HEAD:develop
