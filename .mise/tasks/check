@@ -9,6 +9,7 @@ checks=(
   check-pr-source
   shellcheck
   test-iptables
+  test-schedule
   actionlint
 )
 
