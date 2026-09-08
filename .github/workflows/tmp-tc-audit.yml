@@ -1,0 +1,55 @@
+name: Strict TC audit
+
+on:
+  push:
+    branches: [chatgpt-tc-audit]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate whitespace
+        run: git diff --check 7e8de159d53be358c35ba107fa1d5cea3cc909ca..HEAD
+
+      - name: Install shell test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats shellcheck
+
+      - name: Install WebUI lint tool
+        run: npm install --global eslint@latest
+
+      - name: ShellCheck production script
+        run: shellcheck -s sh flexqos.sh
+
+      - name: Lint WebUI
+        run: .mise/tasks/lint-webui
+        env:
+          MISE_PROJECT_ROOT: ${{ github.workspace }}
+
+      - name: Run firewall regression suite
+        run: bats tests/test-iptables-rules.bats
+
+      - name: Run scheduler regression suite
+        run: bats tests/test-schedule.bats
+
+      - name: Run TC regression suite
+        run: bats tests/test-tc.bats
+
+      - name: Run WebUI regression suite
+        run: .mise/tasks/test-webui
+        env:
+          MISE_PROJECT_ROOT: ${{ github.workspace }}
+
+      - name: Verify action syntax
+        run: |
+          mkdir -p /tmp/actionlint
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /tmp/actionlint
+          /tmp/actionlint/actionlint .github/workflows/*.yml
