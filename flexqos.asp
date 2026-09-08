@@ -819,7 +819,7 @@ function table_sort(a, b){
 
 function updateTable()
 {
-	var clientObj, clientName;
+	var clientObj;
 	//sort table data
 	if (sortfield < 5)
 		tabledata.sort(function(a,b) {return a[5].localeCompare(b[5])} );
@@ -839,6 +839,8 @@ function updateTable()
 		'<th width="27%" id="track_header_5" style="cursor: pointer;" onclick="setsort(5); updateTable()">Application</th></tr>';
 
 	for(var i = 0; i < tabledata.length; i++){
+		var clientName = "";
+		var srchost = tabledata[i][1];
 		var qos_class = tabledata[i][5].split(">")[0];
 		var label = tabledata[i][5].split(">")[1];
 		var mark = (parseInt(tabledata[i][7]).toString(16).padStart(2,'0') + parseInt(tabledata[i][6]).toString(16).padStart(4,'0')).toUpperCase();
