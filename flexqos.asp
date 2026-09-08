@@ -145,7 +145,7 @@ box-shadow: #2B6692 5px 0px 0px 0px inset;
 td.cat7{
 box-shadow: #6C604F 5px 0px 0px 0px inset;
 }
-#sched_block thead th { 
+#sched_block thead th {
 color: #fff !important;
 }
 #sched_block .sched-day{
@@ -618,20 +618,18 @@ function timeValid(hm){
   return /^[0-2]\d:[0-5]\d$/.test(hm) && parseInt(hm.substr(0,2),10) < 24;
 }
 
-// Parse one record string (“<1>DOW>HH:MM>HH:MM” or 3-part)
+// Parse one record string: “<1>DOW>HH:MM>HH:MM”
 function schedParse(str){
   if (typeof str !== "string" || !str.trim()) return null;
   var s = str.replace(/^</,"").replace(/>$/,"").split(">");
-  if (s.length < 3 || s.length > 4) return null;
-  var en = (s[0] === "1");
-  var days = parseDaysSpec(s[1]);
-  var o = { enabled: en, days: days };
-  if (s.length === 4){ o.start = s[2]; o.end = s[3]; }
-  else { // 3-part, treat as start-only (“start” OR “end”)
-    // Decide by position we saved in the past; to be safe, accept either:
-    if (timeValid(s[2])) o.start = s[2]; else o.end = s[2];
-  }
-  return o;
+  if (s.length !== 4) return null;
+
+  return {
+    enabled: (s[0] === "1"),
+    days: parseDaysSpec(s[1]),
+    start: s[2],
+    end: s[3]
+  };
 }
 
 // Stringify one full window record
@@ -737,29 +735,17 @@ function schedInitOnce(){
 // Load from saved settings into SCHED and render
 function schedPopulateFromSettings(){
   SCHED = [];
-  var raw = _sched_trim(custom_settings.flexqos_schedule || "");
-  if (raw){
-    // Accept both 4-part windows and old paired 3-part records
-    var parts = raw.split("|");
-    var pairmap = Object.create(null); // key: days-spec → {start?, end?}
-    parts.forEach(function(p){
-      var rec = schedParse(p);
-      if (!rec || !rec.enabled) return;
-      var key = stringifyDays(rec.days);
-      if (rec.start && rec.end){
-        SCHED.push({days:rec.days, start:rec.start, end:rec.end});
-      }else{
-        pairmap[key] = pairmap[key] || {days:rec.days};
-        if (rec.start) pairmap[key].start = rec.start;
-        if (rec.end)   pairmap[key].end   = rec.end;
-      }
+  var parts = raw.split("|");
+  parts.forEach(function(p){
+    var rec = schedParse(p);
+    if (!rec || !rec.enabled) return;
+
+    SCHED.push({
+      days: rec.days,
+      start: rec.start,
+      end: rec.end
     });
-    Object.keys(pairmap).forEach(function(k){
-      var r = pairmap[k];
-      if (r.start || r.end){
-        SCHED.push({days:r.days, start:r.start || "00:00", end:r.end || "00:00"});
-      }
-    });
+  });
 
     document.getElementById("sched_enabled").checked = true;
     schedToggleUI();
