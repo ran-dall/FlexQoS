@@ -162,6 +162,14 @@ iptables_static_rules() {
 
 		ip6tables -t mangle -A POSTROUTING -o "${lan}" -m mark --mark 0x80000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_down"
 		ip6tables -t mangle -A POSTROUTING -o "${wan}" -m mark --mark 0x40000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_up"
+	else
+		# Remove IPv6 static state left from a previous enabled configuration.
+		ip6tables -t mangle -D OUTPUT -o "${wan}" -p udp -m multiport --dports 53,123 -j MARK --set-mark 0x40"${Net_mark}"0fff/0xc03f0fff >/dev/null 2>&1
+		ip6tables -t mangle -D OUTPUT -o "${wan}" -p tcp -m multiport --dports 53,853 -j MARK --set-mark 0x40"${Net_mark}"0fff/0xc03f0fff >/dev/null 2>&1
+		ip6tables -t mangle -D OUTPUT -o "${wan}" -p udp -m multiport ! --dports 53,123 -j MARK --set-mark 0x40"${OUTPUTCLS}"ffff/0xc03fffff >/dev/null 2>&1
+		ip6tables -t mangle -D OUTPUT -o "${wan}" -p tcp -m multiport ! --dports 53,853 -j MARK --set-mark 0x40"${OUTPUTCLS}"ffff/0xc03fffff >/dev/null 2>&1
+		while ip6tables -t mangle -D POSTROUTING -o "${lan}" -m mark --mark 0x80000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_down" >/dev/null 2>&1; do :; done
+		while ip6tables -t mangle -D POSTROUTING -o "${wan}" -m mark --mark 0x40000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_up" >/dev/null 2>&1; do :; done
 	fi
 }
 
@@ -2647,6 +2655,17 @@ validate_iptables_rules() {
 		   [ "${ipv6_up_present}" != "${ipv6_up_expected}" ]; then
 			return 1
 		fi
+	else
+		# Missing managed IPv6 chains are normal while IPv6 is disabled. Existing
+		# managed chains, however, must be empty so stale classification cannot live on.
+		if ipv6_down_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_down" 2>/dev/null)"; then
+			ipv6_down_present="$(printf '%s\n' "${ipv6_down_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_down " | normalize_iptables_rules)"
+			[ -z "${ipv6_down_present}" ] || return 1
+		fi
+		if ipv6_up_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_up" 2>/dev/null)"; then
+			ipv6_up_present="$(printf '%s\n' "${ipv6_up_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_up " | normalize_iptables_rules)"
+			[ -z "${ipv6_up_present}" ] || return 1
+		fi
 	fi
 
 	return 0
@@ -2660,10 +2679,10 @@ write_iptables_rules() {
 	{
 		printf "iptables -t mangle -F %s 2>/dev/null\n" "${SCRIPTNAME_DISPLAY}_down"
 		printf "iptables -t mangle -F %s 2>/dev/null\n" "${SCRIPTNAME_DISPLAY}_up"
-		if [ "${IPv6_enabled}" != "disabled" ]; then
-			printf "ip6tables -t mangle -F %s 2>/dev/null\n" "${SCRIPTNAME_DISPLAY}_down"
-			printf "ip6tables -t mangle -F %s 2>/dev/null\n" "${SCRIPTNAME_DISPLAY}_up"
-		fi
+		# Always flush the managed IPv6 chains. If IPv6 was disabled after being
+		# active, otherwise-stale FlexQoS rules would survive indefinitely.
+		printf "ip6tables -t mangle -F %s 2>/dev/null\n" "${SCRIPTNAME_DISPLAY}_down"
+		printf "ip6tables -t mangle -F %s 2>/dev/null\n" "${SCRIPTNAME_DISPLAY}_up"
 	} > "/tmp/${SCRIPTNAME}_iprules"
 
 	# An empty configuration still needs the flush commands above so stale

@@ -11,6 +11,7 @@ from pathlib import Path
 
 wanted = {
     "get_class_mark",
+    "iptables_static_rules",
     "Is_Valid_CIDR",
     "Is_Valid_Port",
     "Is_Valid_Mark",
@@ -55,6 +56,7 @@ setup() {
   IPv6_enabled="disabled"
   iptables_rules=""
   lan="br0"
+  wan="eth0"
 
   Net_mark="09"
   Work_mark="06"
@@ -80,6 +82,13 @@ setup() {
   IP6TABLES_S_FAIL=0
 
   load_flexqos_functions
+}
+
+am_settings_get() {
+  case "${1:-}" in
+    flexqos_outputcls) printf '5\n' ;;
+    *) printf '\n' ;;
+  esac
 }
 
 teardown() {
@@ -112,6 +121,10 @@ iptables() {
       [ "$IPTABLES_S_FAIL" -eq 0 ] || return "$IPTABLES_S_FAIL"
       [ -z "$IPV4_UP_STATE" ] || printf '%s\n' "$IPV4_UP_STATE"
       ;;
+    "-t mangle -D POSTROUTING"*)
+      printf 'iptables %s\n' "$*" >> "$IPTABLES_EXEC_LOG"
+      return 1
+      ;;
     *)
       printf 'iptables %s\n' "$*" >> "$IPTABLES_EXEC_LOG"
       ;;
@@ -128,6 +141,10 @@ ip6tables() {
     "-t mangle -S ${SCRIPTNAME_DISPLAY}_up")
       [ "$IP6TABLES_S_FAIL" -eq 0 ] || return "$IP6TABLES_S_FAIL"
       [ -z "$IPV6_UP_STATE" ] || printf '%s\n' "$IPV6_UP_STATE"
+      ;;
+    "-t mangle -D POSTROUTING"*)
+      printf 'ip6tables %s\n' "$*" >> "$IPTABLES_EXEC_LOG"
+      return 1
       ;;
     *)
       printf 'ip6tables %s\n' "$*" >> "$IPTABLES_EXEC_LOG"
@@ -432,7 +449,7 @@ set_exact_chain_state() {
   [[ "$(canonical_file)" == *'ip6tables -t mangle -I PREROUTING -i br0 -m conntrack --ctstate NEW -m set --match-set 192.168.1.2-mac src -j SET --add-set 192.168.1.2 src --exist'* ]]
 }
 
-@test "generated apply file executes flushes and appends against command mocks" {
+@test "generated apply file flushes both families before appending IPv4 rules" {
   iptables_rules='<>>tcp>>443>>5'
   write_iptables_rules validate
   : > "$IPTABLES_EXEC_LOG"
@@ -440,11 +457,13 @@ set_exact_chain_state() {
   # shellcheck source=/dev/null
   source "/tmp/${SCRIPTNAME}_iprules"
 
-  [ "$(wc -l < "$IPTABLES_EXEC_LOG")" -eq 4 ]
+  [ "$(wc -l < "$IPTABLES_EXEC_LOG")" -eq 6 ]
   assert_equal 'iptables -t mangle -F FlexQoS_down' "$(sed -n '1p' "$IPTABLES_EXEC_LOG")"
   assert_equal 'iptables -t mangle -F FlexQoS_up' "$(sed -n '2p' "$IPTABLES_EXEC_LOG")"
-  [[ "$(sed -n '3p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_down '* ]]
-  [[ "$(sed -n '4p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_up '* ]]
+  assert_equal 'ip6tables -t mangle -F FlexQoS_down' "$(sed -n '3p' "$IPTABLES_EXEC_LOG")"
+  assert_equal 'ip6tables -t mangle -F FlexQoS_up' "$(sed -n '4p' "$IPTABLES_EXEC_LOG")"
+  [[ "$(sed -n '5p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_down '* ]]
+  [[ "$(sed -n '6p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_up '* ]]
 }
 
 @test "validation generation has no ipset or nvram side effects" {
@@ -455,11 +474,11 @@ set_exact_chain_state() {
   [ ! -s "$NVRAM_LOG" ]
 }
 
-@test "empty configuration produces only IPv4 flushes when IPv6 is disabled" {
+@test "empty configuration flushes both managed families when IPv6 is disabled" {
   local expected
   iptables_rules=""
   write_iptables_rules validate
-  expected=$'iptables -t mangle -F FlexQoS_down 2>/dev/null\niptables -t mangle -F FlexQoS_up 2>/dev/null'
+  expected=$'iptables -t mangle -F FlexQoS_down 2>/dev/null\niptables -t mangle -F FlexQoS_up 2>/dev/null\nip6tables -t mangle -F FlexQoS_down 2>/dev/null\nip6tables -t mangle -F FlexQoS_up 2>/dev/null'
   assert_equal "$expected" "$(canonical_file)"
 }
 
@@ -562,6 +581,33 @@ set_exact_chain_state() {
   IPTABLES_S_FAIL=2
   run validate_iptables_rules
   assert_failure
+}
+
+@test "validator rejects stale IPv6 chain rules after IPv6 is disabled" {
+  IPv6_enabled="disabled"
+  iptables_rules=""
+  set_chain_counts 0 0 1 1
+  run validate_iptables_rules
+  assert_failure
+}
+
+@test "validator tolerates absent IPv6 managed chains while IPv6 is disabled" {
+  IPv6_enabled="disabled"
+  iptables_rules=""
+  IP6TABLES_S_FAIL=2
+  run validate_iptables_rules
+  assert_success
+}
+
+@test "disabled IPv6 static reconciliation emits deletes and no adds" {
+  IPv6_enabled="disabled"
+  : > "$IPTABLES_EXEC_LOG"
+  run iptables_static_rules
+  assert_success
+  grep -q '^ip6tables -t mangle -D OUTPUT ' "$IPTABLES_EXEC_LOG"
+  grep -q '^ip6tables -t mangle -D POSTROUTING ' "$IPTABLES_EXEC_LOG"
+  ! grep -q '^ip6tables -t mangle -A ' "$IPTABLES_EXEC_LOG"
+  ! grep -q '^ip6tables -t mangle -N ' "$IPTABLES_EXEC_LOG"
 }
 
 @test "validator fails closed when ip6tables state cannot be inspected" {
