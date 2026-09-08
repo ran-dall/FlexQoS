@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#MISE description="Validate the pull request branch policy"
+
+set -euo pipefail
+
+cd "$MISE_PROJECT_ROOT"
+
+head_ref="${HEAD_REF:-$(git branch --show-current)}"
+base_ref="${BASE_REF:-}"
+
+if [[ -z "$head_ref" ]]; then
+  echo "Unable to determine HEAD_REF. Set HEAD_REF explicitly." >&2
+  exit 2
+fi
+
+if [[ -z "$base_ref" ]]; then
+  if [[ "$head_ref" == "develop" ]]; then
+    base_ref="master"
+  else
+    base_ref="develop"
+  fi
+fi
+
+printf 'Checking PR branch policy: %s -> %s\n' "$head_ref" "$base_ref"
+
+if [[ "$head_ref" != "develop" && "$base_ref" == "master" ]]; then
+  echo "Pull requests to master are only allowed from develop." >&2
+  exit 1
+fi
+
+echo "PR branch policy passed."
