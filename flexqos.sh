@@ -1965,7 +1965,7 @@ qos_schedule_menu() {
             printf "  5) Clear ALL schedules\n"
         fi
         printf "  e) Exit\n"
-        printf "-----------------------------------------------\n"
+        printf '%s\n' '-----------------------------------------------'
         printf "Enter selection: "
         read -r sel || return
 
