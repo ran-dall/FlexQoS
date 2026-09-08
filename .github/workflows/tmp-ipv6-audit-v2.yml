@@ -1,0 +1,54 @@
+name: Strict IPv6 lifecycle audit v2
+
+on:
+  push:
+    branches: [chatgpt-ipv6-audit]
+    paths:
+      - '.github/tmp-ipv6-hardening.py'
+      - '.github/workflows/tmp-ipv6-audit-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply IPv6 lifecycle hardening and tests
+        run: python3 .github/tmp-ipv6-hardening.py
+
+      - name: Validate whitespace
+        run: git diff --check fd983ab0c675346981d2a9b491c38240889a8513
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats shellcheck
+          npm install --global eslint@latest
+
+      - name: Run full gate
+        run: |
+          shellcheck -s sh flexqos.sh
+          MISE_PROJECT_ROOT="$PWD" .mise/tasks/lint-webui
+          bats tests/test-iptables-rules.bats
+          bats tests/test-schedule.bats
+          bats tests/test-tc.bats
+          MISE_PROJECT_ROOT="$PWD" .mise/tasks/test-webui
+          mkdir -p /tmp/actionlint
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /tmp/actionlint
+          /tmp/actionlint/actionlint .github/workflows/*.yml
+
+      - name: Create final IPv6 lifecycle commit
+        run: |
+          rm -f .github/tmp-ipv6-hardening.py
+          rm -f .github/workflows/tmp-ipv6-audit.yml .github/workflows/tmp-ipv6-audit-v2.yml
+          git config user.name "Randall"
+          git config user.email "17261190+ran-dall@users.noreply.github.com"
+          git reset --soft fd983ab0c675346981d2a9b491c38240889a8513
+          git add -A
+          git commit -m "fix(firewall): clean stale IPv6 state when disabled" -m "Always flush managed IPv6 chains, detect stale IPv6 rules after an enabled-to-disabled transition, and remove FlexQoS IPv6 static rules and jumps while IPv6 is disabled. Extend strict firewall regression coverage for cleanup, absent-chain tolerance, and exact dual-stack flush ordering."
+          git push origin HEAD:develop
