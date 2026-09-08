@@ -11,6 +11,7 @@ checks=(
   lint-webui
   test-iptables
   test-schedule
+  test-tc
   test-webui
   actionlint
 )
