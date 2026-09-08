@@ -1,4 +1,6 @@
 [tools]
 actionlint = "latest"
 bats = "latest"
+node = "24"
+"npm:eslint" = "latest"
 shellcheck = "latest"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run strict FlexQoS WebUI regression tests"
+
+set -euo pipefail
+
+cd "$MISE_PROJECT_ROOT"
+node --test tests/test-webui.mjs

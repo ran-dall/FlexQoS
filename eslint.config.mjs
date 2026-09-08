@@ -1,0 +1,38 @@
+export default [
+  {
+    files: [".flexqos-webui-lint-*.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "script",
+    },
+    linterOptions: {
+      reportUnusedDisableDirectives: "error",
+    },
+    rules: {
+      "constructor-super": "error",
+      "getter-return": "error",
+      "no-class-assign": "error",
+      "no-const-assign": "error",
+      "no-dupe-args": "error",
+      "no-dupe-else-if": "error",
+      "no-dupe-keys": "error",
+      "no-duplicate-case": "error",
+      "no-eval": "error",
+      "no-ex-assign": "error",
+      "no-func-assign": "error",
+      "no-import-assign": "error",
+      "no-new-native-nonconstructor": "error",
+      "no-obj-calls": "error",
+      "no-regex-spaces": "error",
+      "no-self-assign": "error",
+      "no-setter-return": "error",
+      "no-sparse-arrays": "error",
+      "no-this-before-super": "error",
+      "no-unsafe-finally": "error",
+      "no-unsafe-negation": "error",
+      "require-yield": "error",
+      "use-isnan": "error",
+      "valid-typeof": "error",
+    },
+  },
+];

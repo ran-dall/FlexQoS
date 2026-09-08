@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Lint the FlexQoS ASP WebUI and inline JavaScript"
+
+set -euo pipefail
+
+cd "$MISE_PROJECT_ROOT"
+tmp="$(mktemp "$MISE_PROJECT_ROOT/.flexqos-webui-lint-XXXXXX.js")"
+trap 'rm -f "$tmp"' EXIT
+
+node tools/lint-webui.mjs flexqos.asp "$tmp"
+eslint "$tmp"
