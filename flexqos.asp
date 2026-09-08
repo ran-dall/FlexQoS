@@ -583,8 +583,12 @@ function parseDaysSpec(spec){
     if (tok.indexOf("-") >= 0){
       var p = tok.split("-"), a = parseInt(p[0],10), b = parseInt(p[1],10);
       if (!isNaN(a) && !isNaN(b)){
-        var lo = Math.min(a,b), hi = Math.max(a,b);
-        for (var d = lo; d <= hi; d++) push(d);
+        if (a <= b) {
+          for (var d = a; d <= b; d++) push(d);
+        } else {
+          for (var d = a; d <= 6; d++) push(d);
+          for (var d = 0; d <= b; d++) push(d);
+        }
       }
     }else{
       var n = parseInt(tok,10); if (!isNaN(n)) push(n);
