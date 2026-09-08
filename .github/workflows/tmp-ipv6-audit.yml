@@ -1,0 +1,278 @@
+name: Strict IPv6 lifecycle audit
+
+on:
+  push:
+    branches: [chatgpt-ipv6-audit]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply IPv6 lifecycle hardening and tests
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          script = Path('flexqos.sh')
+          text = script.read_text()
+
+          old = '''\t\tprintf "iptables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_down"
+          \t\tprintf "iptables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_up"
+          \t\tif [ "${IPv6_enabled}" != "disabled" ]; then
+          \t\t\tprintf "ip6tables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_down"
+          \t\t\tprintf "ip6tables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_up"
+          \t\tfi
+          '''
+          new = '''\t\tprintf "iptables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_down"
+          \t\tprintf "iptables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_up"
+          \t\t# Always flush the managed IPv6 chains. If IPv6 was disabled after being
+          \t\t# active, otherwise-stale FlexQoS rules would survive indefinitely.
+          \t\tprintf "ip6tables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_down"
+          \t\tprintf "ip6tables -t mangle -F %s 2>/dev/null\\n" "${SCRIPTNAME_DISPLAY}_up"
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'write IPv6 flush anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''\tif [ "${IPv6_enabled}" != "disabled" ]; then
+          \t\tif ! ipv6_down_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_down" 2>/dev/null)" ||
+          \t\t   ! ipv6_up_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_up" 2>/dev/null)"; then
+          \t\t\treturn 1
+          \t\tfi
+          \t\tipv6_down_present="$(printf '%s\\n' "${ipv6_down_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_down " | normalize_iptables_rules)"
+          \t\tipv6_up_present="$(printf '%s\\n' "${ipv6_up_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_up " | normalize_iptables_rules)"
+
+          \t\tif [ "${ipv6_down_present}" != "${ipv6_down_expected}" ] ||
+          \t\t   [ "${ipv6_up_present}" != "${ipv6_up_expected}" ]; then
+          \t\t\treturn 1
+          \t\tfi
+          \tfi
+          '''
+          new = '''\tif [ "${IPv6_enabled}" != "disabled" ]; then
+          \t\tif ! ipv6_down_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_down" 2>/dev/null)" ||
+          \t\t   ! ipv6_up_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_up" 2>/dev/null)"; then
+          \t\t\treturn 1
+          \t\tfi
+          \t\tipv6_down_present="$(printf '%s\\n' "${ipv6_down_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_down " | normalize_iptables_rules)"
+          \t\tipv6_up_present="$(printf '%s\\n' "${ipv6_up_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_up " | normalize_iptables_rules)"
+
+          \t\tif [ "${ipv6_down_present}" != "${ipv6_down_expected}" ] ||
+          \t\t   [ "${ipv6_up_present}" != "${ipv6_up_expected}" ]; then
+          \t\t\treturn 1
+          \t\tfi
+          \telse
+          \t\t# IPv6 may legitimately have no FlexQoS chains while disabled. If a
+          \t\t# managed chain still exists, however, it must be empty so an enabled
+          \t\t# -> disabled transition cannot leave stale packet classification behind.
+          \t\tif ipv6_down_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_down" 2>/dev/null)"; then
+          \t\t\tipv6_down_present="$(printf '%s\\n' "${ipv6_down_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_down " | normalize_iptables_rules)"
+          \t\t\t[ -z "${ipv6_down_present}" ] || return 1
+          \t\tfi
+          \t\tif ipv6_up_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_up" 2>/dev/null)"; then
+          \t\t\tipv6_up_present="$(printf '%s\\n' "${ipv6_up_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_up " | normalize_iptables_rules)"
+          \t\t\t[ -z "${ipv6_up_present}" ] || return 1
+          \t\tfi
+          \tfi
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'validate IPv6 anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          marker = '''\t\tip6tables -t mangle -A POSTROUTING -o "${lan}" -m mark --mark 0x80000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_down"
+          \t\tip6tables -t mangle -A POSTROUTING -o "${wan}" -m mark --mark 0x40000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_up"
+          \tfi
+          }\n'''
+          replacement = '''\t\tip6tables -t mangle -A POSTROUTING -o "${lan}" -m mark --mark 0x80000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_down"
+          \t\tip6tables -t mangle -A POSTROUTING -o "${wan}" -m mark --mark 0x40000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_up"
+          \telse
+          \t\t# Remove IPv6 static state left from a previous enabled configuration.
+          \t\tip6tables -t mangle -D OUTPUT -o "${wan}" -p udp -m multiport --dports 53,123 -j MARK --set-mark 0x40"${Net_mark}"0fff/0xc03f0fff >/dev/null 2>&1
+          \t\tip6tables -t mangle -D OUTPUT -o "${wan}" -p tcp -m multiport --dports 53,853 -j MARK --set-mark 0x40"${Net_mark}"0fff/0xc03f0fff >/dev/null 2>&1
+          \t\tip6tables -t mangle -D OUTPUT -o "${wan}" -p udp -m multiport ! --dports 53,123 -j MARK --set-mark 0x40"${OUTPUTCLS}"ffff/0xc03fffff >/dev/null 2>&1
+          \t\tip6tables -t mangle -D OUTPUT -o "${wan}" -p tcp -m multiport ! --dports 53,853 -j MARK --set-mark 0x40"${OUTPUTCLS}"ffff/0xc03fffff >/dev/null 2>&1
+          \t\twhile ip6tables -t mangle -D POSTROUTING -o "${lan}" -m mark --mark 0x80000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_down" >/dev/null 2>&1; do :; done
+          \t\twhile ip6tables -t mangle -D POSTROUTING -o "${wan}" -m mark --mark 0x40000000/0xc0000000 -j "${SCRIPTNAME_DISPLAY}_up" >/dev/null 2>&1; do :; done
+          \tfi
+          }\n'''
+          if text.count(marker) != 1:
+              raise SystemExit(f'static IPv6 anchor count: {text.count(marker)}')
+          script.write_text(text.replace(marker, replacement, 1))
+
+          test = Path('tests/test-iptables-rules.bats')
+          t = test.read_text()
+          t = t.replace('    "get_class_mark",\n', '    "get_class_mark",\n    "iptables_static_rules",\n', 1)
+          t = t.replace('  lan="br0"\n', '  lan="br0"\n  wan="eth0"\n', 1)
+          t = t.replace('  load_flexqos_functions\n}\n\nteardown()', '  load_flexqos_functions\n}\n\nam_settings_get() {\n  case "${1:-}" in\n    flexqos_outputcls) printf \'5\\n\' ;;\n    *) printf \'\\n\' ;;\n  esac\n}\n\nteardown()', 1)
+
+          old = '''    *)
+              printf 'iptables %s\\n' "$*" >> "$IPTABLES_EXEC_LOG"
+              ;;
+          esac
+          return 0
+          }
+          '''
+          new = '''    "-t mangle -D POSTROUTING"*)
+              printf 'iptables %s\\n' "$*" >> "$IPTABLES_EXEC_LOG"
+              return 1
+              ;;
+            *)
+              printf 'iptables %s\\n' "$*" >> "$IPTABLES_EXEC_LOG"
+              ;;
+          esac
+          return 0
+          }
+          '''
+          if t.count(old) != 1:
+              raise SystemExit(f'iptables mock anchor count: {t.count(old)}')
+          t = t.replace(old, new, 1)
+
+          old = '''    *)
+              printf 'ip6tables %s\\n' "$*" >> "$IPTABLES_EXEC_LOG"
+              ;;
+          esac
+          return 0
+          }
+          '''
+          new = '''    "-t mangle -D POSTROUTING"*)
+              printf 'ip6tables %s\\n' "$*" >> "$IPTABLES_EXEC_LOG"
+              return 1
+              ;;
+            *)
+              printf 'ip6tables %s\\n' "$*" >> "$IPTABLES_EXEC_LOG"
+              ;;
+          esac
+          return 0
+          }
+          '''
+          if t.count(old) != 1:
+              raise SystemExit(f'ip6tables mock anchor count: {t.count(old)}')
+          t = t.replace(old, new, 1)
+
+          old = '''@test "generated apply file executes flushes and appends against command mocks" {
+            iptables_rules='<>>tcp>>443>>5'
+            write_iptables_rules validate
+            : > "$IPTABLES_EXEC_LOG"
+
+            # shellcheck source=/dev/null
+            source "/tmp/${SCRIPTNAME}_iprules"
+
+            [ "$(wc -l < "$IPTABLES_EXEC_LOG")" -eq 4 ]
+            assert_equal 'iptables -t mangle -F FlexQoS_down' "$(sed -n '1p' "$IPTABLES_EXEC_LOG")"
+            assert_equal 'iptables -t mangle -F FlexQoS_up' "$(sed -n '2p' "$IPTABLES_EXEC_LOG")"
+            [[ "$(sed -n '3p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_down '* ]]
+            [[ "$(sed -n '4p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_up '* ]]
+          }
+          '''
+          new = '''@test "generated apply file flushes both families before appending IPv4 rules" {
+            iptables_rules='<>>tcp>>443>>5'
+            write_iptables_rules validate
+            : > "$IPTABLES_EXEC_LOG"
+
+            # shellcheck source=/dev/null
+            source "/tmp/${SCRIPTNAME}_iprules"
+
+            [ "$(wc -l < "$IPTABLES_EXEC_LOG")" -eq 6 ]
+            assert_equal 'iptables -t mangle -F FlexQoS_down' "$(sed -n '1p' "$IPTABLES_EXEC_LOG")"
+            assert_equal 'iptables -t mangle -F FlexQoS_up' "$(sed -n '2p' "$IPTABLES_EXEC_LOG")"
+            assert_equal 'ip6tables -t mangle -F FlexQoS_down' "$(sed -n '3p' "$IPTABLES_EXEC_LOG")"
+            assert_equal 'ip6tables -t mangle -F FlexQoS_up' "$(sed -n '4p' "$IPTABLES_EXEC_LOG")"
+            [[ "$(sed -n '5p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_down '* ]]
+            [[ "$(sed -n '6p' "$IPTABLES_EXEC_LOG")" == 'iptables -t mangle -A FlexQoS_up '* ]]
+          }
+          '''
+          if t.count(old) != 1:
+              raise SystemExit(f'apply test anchor count: {t.count(old)}')
+          t = t.replace(old, new, 1)
+
+          old = '''@test "empty configuration produces only IPv4 flushes when IPv6 is disabled" {
+            local expected
+            iptables_rules=""
+            write_iptables_rules validate
+            expected=$'iptables -t mangle -F FlexQoS_down 2>/dev/null\\niptables -t mangle -F FlexQoS_up 2>/dev/null'
+            assert_equal "$expected" "$(canonical_file)"
+          }
+          '''
+          new = '''@test "empty configuration flushes both managed families when IPv6 is disabled" {
+            local expected
+            iptables_rules=""
+            write_iptables_rules validate
+            expected=$'iptables -t mangle -F FlexQoS_down 2>/dev/null\\niptables -t mangle -F FlexQoS_up 2>/dev/null\\nip6tables -t mangle -F FlexQoS_down 2>/dev/null\\nip6tables -t mangle -F FlexQoS_up 2>/dev/null'
+            assert_equal "$expected" "$(canonical_file)"
+          }
+          '''
+          if t.count(old) != 1:
+              raise SystemExit(f'empty config test anchor count: {t.count(old)}')
+          t = t.replace(old, new, 1)
+
+          insert = '''
+          @test "validator rejects stale IPv6 chain rules after IPv6 is disabled" {
+            IPv6_enabled="disabled"
+            iptables_rules=""
+            set_chain_counts 0 0 1 1
+            run validate_iptables_rules
+            assert_failure
+          }
+
+          @test "validator tolerates absent IPv6 managed chains while IPv6 is disabled" {
+            IPv6_enabled="disabled"
+            iptables_rules=""
+            IP6TABLES_S_FAIL=2
+            run validate_iptables_rules
+            assert_success
+          }
+
+          @test "disabled IPv6 static reconciliation emits deletes and no adds" {
+            IPv6_enabled="disabled"
+            : > "$IPTABLES_EXEC_LOG"
+            run iptables_static_rules
+            assert_success
+            grep -q '^ip6tables -t mangle -D OUTPUT ' "$IPTABLES_EXEC_LOG"
+            grep -q '^ip6tables -t mangle -D POSTROUTING ' "$IPTABLES_EXEC_LOG"
+            ! grep -q '^ip6tables -t mangle -A ' "$IPTABLES_EXEC_LOG"
+            ! grep -q '^ip6tables -t mangle -N ' "$IPTABLES_EXEC_LOG"
+          }
+          '''
+          anchor = '@test "validator fails closed when ip6tables state cannot be inspected" {'
+          if t.count(anchor) != 1:
+              raise SystemExit('final test anchor missing')
+          t = t.replace(anchor, insert + '\n' + anchor, 1)
+          test.write_text(t)
+          PY
+
+      - name: Validate whitespace
+        run: git diff --check fd983ab0c675346981d2a9b491c38240889a8513
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats shellcheck
+          npm install --global eslint@latest
+
+      - name: Run full gate
+        run: |
+          shellcheck -s sh flexqos.sh
+          MISE_PROJECT_ROOT="$PWD" .mise/tasks/lint-webui
+          bats tests/test-iptables-rules.bats
+          bats tests/test-schedule.bats
+          bats tests/test-tc.bats
+          MISE_PROJECT_ROOT="$PWD" .mise/tasks/test-webui
+          mkdir -p /tmp/actionlint
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /tmp/actionlint
+          /tmp/actionlint/actionlint .github/workflows/*.yml
+
+      - name: Create final IPv6 lifecycle commit
+        run: |
+          rm -f .github/workflows/tmp-ipv6-audit.yml
+          git config user.name "Randall"
+          git config user.email "17261190+ran-dall@users.noreply.github.com"
+          git reset --soft fd983ab0c675346981d2a9b491c38240889a8513
+          git add -A
+          git commit -m "fix(firewall): clean stale IPv6 state when disabled" -m "Always flush managed IPv6 chains, detect stale IPv6 rules after an enabled-to-disabled transition, and remove FlexQoS IPv6 static rules and jumps while IPv6 is disabled. Extend strict firewall regression coverage for cleanup, absent-chain tolerance, and exact dual-stack flush ordering."
+          git push origin HEAD:develop
