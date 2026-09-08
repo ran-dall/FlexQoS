@@ -200,6 +200,7 @@ write_appdb_static_rules() {
 init_tc_cache() {
 	local QOS_OVERHEAD
 	local QOS_ATM
+	local ATM_CELLS
 
 	case "$(am_settings_get "${SCRIPTNAME}"_qdisc)" in
     	0)
@@ -212,7 +213,8 @@ init_tc_cache() {
 
 	# Cache the MTU/ATM-derived minimum once per run instead of recalculating it
 	# in get_burst(), get_cburst(), and get_quantum() for every generated class.
-	MIN_PACKET=$(( (WANMTU + 48 + 47) / 48 * 53 ))
+	ATM_CELLS=$(( (WANMTU + 48 + 47) / 48 ))
+	MIN_PACKET=$(( ATM_CELLS * 53 ))
 
 	QOS_OVERHEAD="$(nvram get qos_overhead)"
 	QOS_ATM="$(nvram get qos_atm)"
