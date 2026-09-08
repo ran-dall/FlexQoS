@@ -735,17 +735,19 @@ function schedInitOnce(){
 // Load from saved settings into SCHED and render
 function schedPopulateFromSettings(){
   SCHED = [];
-  var parts = raw.split("|");
-  parts.forEach(function(p){
-    var rec = schedParse(p);
-    if (!rec || !rec.enabled) return;
+  var raw = _sched_trim(custom_settings.flexqos_schedule || "");
+  if (raw){
+    var parts = raw.split("|");
+    parts.forEach(function(p){
+      var rec = schedParse(p);
+      if (!rec || !rec.enabled) return;
 
-    SCHED.push({
-      days: rec.days,
-      start: rec.start,
-      end: rec.end
+      SCHED.push({
+        days: rec.days,
+        start: rec.start,
+        end: rec.end
+      });
     });
-  });
 
     document.getElementById("sched_enabled").checked = true;
     schedToggleUI();
