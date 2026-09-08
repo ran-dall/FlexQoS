@@ -5,6 +5,7 @@ on:
     branches: [chatgpt-config-audit]
     paths:
       - '.github/tmp-config-hardening.py'
+      - '.github/tmp-config-corrections.py'
       - '.github/workflows/tmp-config-audit.yml'
 
 permissions:
@@ -19,7 +20,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply config hardening and tests
-        run: python3 .github/tmp-config-hardening.py
+        run: |
+          python3 .github/tmp-config-hardening.py
+          python3 .github/tmp-config-corrections.py
 
       - name: Validate whitespace
         run: git diff --check 50e9fa7c80e2f662d8f3fe3ba1ba7486eb64f502
@@ -45,7 +48,7 @@ jobs:
 
       - name: Create final config commit
         run: |
-          rm -f .github/tmp-config-hardening.py .github/workflows/tmp-config-audit.yml
+          rm -f .github/tmp-config-hardening.py .github/tmp-config-corrections.py .github/workflows/tmp-config-audit.yml
           git config user.name "Randall"
           git config user.email "17261190+ran-dall@users.noreply.github.com"
           git reset --soft 50e9fa7c80e2f662d8f3fe3ba1ba7486eb64f502
