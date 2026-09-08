@@ -1741,12 +1741,13 @@ tableValidator.qosPortRange = {
 			}
 			else if (multiportre.test(PortRange)) {
 				var split = PortRange.split(",");
+				hintMsg = HINTPASS;
+
 				for (var i = 0; i < split.length; i++) {
-					if(!eachPort(split[i], mini, maxi)){
+					if (!eachPort(split[i], mini, maxi)) {
 						hintMsg = "Please enter a value between " + mini + " to " + maxi;
+						break;
 					}
-					else
-						hintMsg =  HINTPASS;
 				}
 			}
 			else {
