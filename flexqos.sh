@@ -1660,7 +1660,11 @@ _qs_apply_jobs() {
     done
     IFS="$OLDIFS"
 
-    [ "$aligned" = 1 ] && qos_start || qos_stop
+    if [ "$aligned" = 1 ]; then
+        qos_start
+    else
+        qos_stop
+    fi
 }
 
 qos_schedule_apply_from_config() {
