@@ -278,14 +278,14 @@ get_cburst() {
 	BURST=$((RATE*1000/1280000))
 	BURST=$((BURST*1600))
 
-	# If the calculated burst is less than ASUS' minimum value of 3200, use 3200
-	# to avoid problems with child and leaf classes outside of FlexQoS scope that use 3200.
-	if [ "${BURST}" -lt 3200 ]; then
-		if [ "${QDISC:-1}" = "0" ]; then
+	# Keep ASUS qdiscs at their 3200-byte floor. For fq_codel, never emit a
+	# cburst below the cached MTU/ATM-derived minimum packet size.
+	if [ "${QDISC:-1}" = "0" ]; then
+		if [ "${BURST}" -lt 3200 ]; then
 			BURST=3200
-		else
-			BURST="${MIN_PACKET}"
 		fi
+	elif [ "${BURST}" -lt "${MIN_PACKET}" ]; then
+		BURST="${MIN_PACKET}"
 	fi
 
 	printf "%s" "${BURST}"

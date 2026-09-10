@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run traffic-control generation regression tests"
+
+set -euo pipefail
+
+cd "$MISE_PROJECT_ROOT"
+bats tests/test-tc.bats
