@@ -8,8 +8,10 @@ cd "$MISE_PROJECT_ROOT"
 checks=(
   check-pr-source
   shellcheck
+  lint-webui
   test-iptables
   test-schedule
+  test-webui
   actionlint
 )
 

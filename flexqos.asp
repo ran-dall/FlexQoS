@@ -1,11 +1,10 @@
-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <!--
-FlexQoS v1.5.3 released 2026-02-27
+FlexQoS v1.5.5 released 2026-06-23
 FlexQoS maintained by AMTM-OSR
 Forked from FreshJR_QOS v8.8, written by FreshJR07 https://github.com/FreshJR07/FreshJR_QOS
 -->
 <html xmlns="http://www.w3.org/1999/xhtml">
-<html xmlns:v>
 <head>
 <meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -568,9 +567,22 @@ var SCHED = [];
 // ---------- helpers ----------
 function _sched_trim(s){ return (s||"").toString().trim(); }
 
+function daysSpecValid(spec){
+  if (typeof spec !== "string") return false;
+  spec = spec.trim();
+  if (!spec) return false;
+  if (spec === "*") return true;
+
+  var parts = spec.split(",");
+  for (var i = 0; i < parts.length; i++){
+    if (!/^[0-7](?:-[0-7])?$/.test(parts[i])) return false;
+  }
+  return true;
+}
+
 function parseDaysSpec(spec){
-  if (typeof spec !== "string") return [];
-  spec = spec.trim(); if (!spec) return [];
+  if (!daysSpecValid(spec)) return [];
+  spec = spec.trim();
   if (spec === "*") return [0,1,2,3,4,5,6];
 
   var days = [], push = function(n){
@@ -579,19 +591,16 @@ function parseDaysSpec(spec){
   };
 
   spec.split(",").forEach(function(tok){
-    tok = tok.trim(); if (!tok) return;
     if (tok.indexOf("-") >= 0){
-      var p = tok.split("-"), a = parseInt(p[0],10), b = parseInt(p[1],10);
-      if (!isNaN(a) && !isNaN(b)){
-        if (a <= b) {
-          for (var d = a; d <= b; d++) push(d);
-        } else {
-          for (var d = a; d <= 6; d++) push(d);
-          for (var d = 0; d <= b; d++) push(d);
-        }
+      var p = tok.split("-"), a = Number(p[0]), b = Number(p[1]);
+      if (a <= b) {
+        for (var d = a; d <= b; d++) push(d);
+      } else {
+        for (var d = a; d <= 6; d++) push(d);
+        for (var d = 0; d <= b; d++) push(d);
       }
     }else{
-      var n = parseInt(tok,10); if (!isNaN(n)) push(n);
+      push(Number(tok));
     }
   });
   return days.sort(function(a,b){ return a - b; });
@@ -623,10 +632,14 @@ function schedParse(str){
   if (typeof str !== "string" || !str.trim()) return null;
   var s = str.replace(/^</,"").replace(/>$/,"").split(">");
   if (s.length !== 4) return null;
+  if (!daysSpecValid(s[1]) || !timeValid(s[2]) || !timeValid(s[3])) return null;
+
+  var days = parseDaysSpec(s[1]);
+  if (!days.length) return null;
 
   return {
     enabled: (s[0] === "1"),
-    days: parseDaysSpec(s[1]),
+    days: days,
     start: s[2],
     end: s[3]
   };
@@ -1661,6 +1674,39 @@ function edit_appdb_Row(r){
 	del_appdb_Row(r);
 }
 
+function validateQoSPortSpec(value){
+	var spec = (value == null ? "" : String(value)).trim().replace(/^!/, "");
+	var mini = 1, maxi = 65535;
+	if (!spec) return { valid: true, reason: "empty" };
+
+	var rangeMatch = spec.match(/^([0-9]{1,5}):([0-9]{1,5})$/);
+	if (rangeMatch) {
+		var start = Number(rangeMatch[1]), end = Number(rangeMatch[2]);
+		if (start >= end) return { valid: false, reason: "range-order" };
+		if (start < mini || start > maxi || end < mini || end > maxi)
+			return { valid: false, reason: "bounds" };
+		return { valid: true, reason: "range" };
+	}
+
+	if (/^[0-9]{1,5}(?:,[0-9]{1,5})+$/.test(spec)) {
+		var ports = spec.split(",");
+		if (ports.length > 15) return { valid: false, reason: "multiport-limit" };
+		for (var i = 0; i < ports.length; i++) {
+			var port = Number(ports[i]);
+			if (port < mini || port > maxi) return { valid: false, reason: "bounds" };
+		}
+		return { valid: true, reason: "multiport" };
+	}
+
+	if (/^[0-9]{1,5}$/.test(spec)) {
+		var single = Number(spec);
+		if (single >= mini && single <= maxi) return { valid: true, reason: "single" };
+		return { valid: false, reason: "bounds" };
+	}
+
+	return { valid: false, reason: "format" };
+}
+
 tableValidator.qosPortRange = {
 	keyPress : function($obj,event) {
 		var objValue = $obj.val();
@@ -1698,12 +1744,6 @@ tableValidator.qosPortRange = {
 		return false;
 	},
 	blur : function(_$obj) {
-		var eachPort = function(num, min, max) {
-			if(num < min || num > max) {
-				return false;
-			}
-			return true;
-		};
 		var hintMsg = "";
 		var _value = _$obj.val();
 		_value = $.trim(_value);
@@ -1716,41 +1756,15 @@ tableValidator.qosPortRange = {
 				hintMsg = HINTPASS;
 		}
 		else {
-			var mini = 1;
-			var maxi = 65535;
-			var PortRange = _value.replace(/^\!/g, "");
-			var singlerangere = new RegExp("^([0-9]{1,5})\:([0-9]{1,5})$", "gi");
-			var multiportre = new RegExp("^([0-9]{1,5})(\,[0-9]{1,5})+$", "gi");
-			if(singlerangere.test(PortRange)) {  // single port range
-				if(parseInt(RegExp.$1) >= parseInt(RegExp.$2)) {
-					hintMsg = _value + " is not a valid port range!";
-				}
-				else{
-					if(!eachPort(RegExp.$1, mini, maxi) || !eachPort(RegExp.$2, mini, maxi)) {
-						hintMsg = "Please enter a value between " + mini + " to " + maxi;
-					}
-					else
-						hintMsg =  HINTPASS;
-					}
-			}
-			else if (multiportre.test(PortRange)) {
-				var split = PortRange.split(",");
+			var result = validateQoSPortSpec(_value);
+			if (result.valid)
 				hintMsg = HINTPASS;
-
-				for (var i = 0; i < split.length; i++) {
-					if (!eachPort(split[i], mini, maxi)) {
-						hintMsg = "Please enter a value between " + mini + " to " + maxi;
-						break;
-					}
-				}
-			}
-			else {
-				if(!tableValid_range(PortRange, mini, maxi)) {
-					hintMsg = "Please enter a value between " + mini + " to " + maxi;
-				}
-				else
-					hintMsg =  HINTPASS;
-			}
+			else if (result.reason == "range-order")
+				hintMsg = _value + " is not a valid port range!";
+			else if (result.reason == "multiport-limit")
+				hintMsg = "A maximum of 15 ports can be specified.";
+			else
+				hintMsg = "Please enter a value between 1 to 65535";
 		}
 		if(_$obj.next().closest(".hint").length) {
 			_$obj.next().closest(".hint").remove();
@@ -2264,7 +2278,7 @@ function set_FlexQoS_mod_vars()
 			iptables_rulename_array = "";
 			var iptables_rulecount = iptables_rulelist_array.split("<").length;
 			for (var i=0;i<iptables_rulecount;i++) {
-				iptables_rulename_array += "<Rule " + eval(" i + 1 ");
+				iptables_rulename_array += "<Rule " + (i + 1);
 			}
 		}
 		else
@@ -2662,12 +2676,12 @@ function check_bandwidth() {
 	var drptot=0;
 	var urptot=0;
 	for (var i=0;i<8;i++) {
-		var drp=eval("document.form.drp"+i);
-		var urp=eval("document.form.urp"+i);
-		var dcp=eval("document.form.dcp"+i);
-		var ucp=eval("document.form.ucp"+i);
-		var dp_desc=eval('document.getElementById("dp'+i+'_desc")');
-		var up_desc=eval('document.getElementById("up'+i+'_desc")');
+		var drp=document.form["drp"+i];
+		var urp=document.form["urp"+i];
+		var dcp=document.form["dcp"+i];
+		var ucp=document.form["ucp"+i];
+		var dp_desc=document.getElementById("dp"+i+"_desc");
+		var up_desc=document.getElementById("up"+i+"_desc");
 		drptot += parseInt(drp.value);
 		urptot += parseInt(urp.value);
 		if ( qos_bwmode == 1 ) {
@@ -3316,3 +3330,4 @@ function DelCookie(cookiename){
 </form>
 <div id="footer"></div>
 </body>
+</html>
