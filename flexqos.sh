@@ -1098,9 +1098,11 @@ compare_remote_version() {
 
 	# Convert 1.5.0 -> 001005000 (4 parts just in case)
 	ver2int() {
-		local a b c d IFS=.
-		set -- $1
-		a=${1:-0}; b=${2:-0}; c=${3:-0}; d=${4:-0}
+		local a b c d
+		IFS=. read -r a b c d <<EOF
+$1
+EOF
+		a=${a:-0}; b=${b:-0}; c=${c:-0}; d=${d:-0}
 		printf '%03d%03d%03d%03d\n' "$a" "$b" "$c" "$d"
 	}
 
@@ -1658,7 +1660,11 @@ _qs_apply_jobs() {
     done
     IFS="$OLDIFS"
 
-    [ "$aligned" = 1 ] && qos_start || qos_stop
+    if [ "$aligned" = 1 ]; then
+        qos_start
+    else
+        qos_stop
+    fi
 }
 
 qos_schedule_apply_from_config() {
@@ -1789,12 +1795,12 @@ _qs_guided_multi() {
 
         while :; do
             t="$(_qs_prompt 'START time to ENABLE QoS' "$def_start")" || return 1
-            if out="$(_qs_parse_time "$t")"; then set -- $out; sh=$1; sm=$2; break; fi
+            if out="$(_qs_parse_time "$t")"; then sh="${out%% *}"; sm="${out#* }"; break; fi
             printf "Invalid time - hours 0-23, minutes 0-59.\n" >&2
         done
         while :; do
             t="$(_qs_prompt 'END time to DISABLE QoS' "$def_end")" || return 1
-            if out="$(_qs_parse_time "$t")"; then set -- $out; eh=$1; em=$2; break; fi
+            if out="$(_qs_parse_time "$t")"; then eh="${out%% *}"; em="${out#* }"; break; fi
             printf "Invalid time - hours 0-23, minutes 0-59.\n" >&2
         done
 
@@ -1826,12 +1832,12 @@ _qs_add_single() {
 
     while :; do
         t="$(_qs_prompt 'START time to ENABLE QoS' '07:00')" || return 1
-        if out="$(_qs_parse_time "$t")"; then set -- $out; sh=$1; sm=$2; break; fi
+        if out="$(_qs_parse_time "$t")"; then sh="${out%% *}"; sm="${out#* }"; break; fi
         printf "Invalid time.\n" >&2
     done
     while :; do
         t="$(_qs_prompt 'END time to DISABLE QoS' '20:00')" || return 1
-        if out="$(_qs_parse_time "$t")"; then set -- $out; eh=$1; em=$2; break; fi
+        if out="$(_qs_parse_time "$t")"; then eh="${out%% *}"; em="${out#* }"; break; fi
         printf "Invalid time.\n" >&2
     done
 
@@ -1876,12 +1882,12 @@ _qs_edit_single() {
     done
     while :; do
         v="$(_qs_prompt 'START time (HH or HH:MM)' "$st")" || return 1
-        if out="$(_qs_parse_time "$v")"; then set -- $out; sh=$1; sm=$2; break; fi
+        if out="$(_qs_parse_time "$v")"; then sh="${out%% *}"; sm="${out#* }"; break; fi
         printf "Invalid time.\n" >&2
     done
     while :; do
         v="$(_qs_prompt 'END time (HH or HH:MM)' "$et")" || return 1
-        if out="$(_qs_parse_time "$v")"; then set -- $out; eh=$1; em=$2; break; fi
+        if out="$(_qs_parse_time "$v")"; then eh="${out%% *}"; em="${out#* }"; break; fi
         printf "Invalid time.\n" >&2
     done
 
