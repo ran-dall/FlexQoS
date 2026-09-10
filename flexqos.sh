@@ -1686,13 +1686,22 @@ _qs_valid_dow() {
 }
 
 _qs_clear_jobs() {
-    cru l | awk -v on="$QOS_CRON_ON" -v off="$QOS_CRON_OFF" '
+    local jobs
+
+    # Do not install a new schedule on top of unknown cron state.
+    jobs="$(cru l)" || return 1
+
+    printf '%s\n' "$jobs" | awk -v on="$QOS_CRON_ON" -v off="$QOS_CRON_OFF" '
         { n=split($0,a,"#"); id=a[n-1];
-          if (id ~ ("^" on "(_[0-9]+)?$") || id ~ ("^" off "(_[0-9]+)?$")) system("cru d " id) }'
+          if (id ~ ("^" on "(_[0-9]+)?$") || id ~ ("^" off "(_[0-9]+)?$")) print id }' |
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        cru d "$id" || exit 1
+    done
 }
 
 _qs_apply_jobs() {
-    _qs_clear_jobs
+    _qs_clear_jobs || return 1
     local n=0 aligned=0 rec en rest dow cron_dow end_dow st et sh sm eh em sh_s sm_s eh_s em_s out ok
 
     # No schedules? Clear cron and LEAVE QoS state as-is.
@@ -1707,6 +1716,7 @@ _qs_apply_jobs() {
         st="${rest%%>*}"; et=""; case "$rest" in *'>'*) et="${rest#*>}" ;; esac
 
         [ "$en" = "1" ] || continue
+        _qs_valid_dow "$dow" || continue
 
         # Validate times using the parser, but build the actual cron fields
         # from the raw HH:MM strings to avoid any numeric re-interpretation.
@@ -1738,8 +1748,18 @@ _qs_apply_jobs() {
         else
             end_dow="$cron_dow"
         fi
-        n=$((n+1)); cru a "${QOS_CRON_ON}_${n}"  "$sm" "$sh" "*" "*" "$cron_dow" "$SCRIPTPATH" -qosstart
-        n=$((n+1)); cru a "${QOS_CRON_OFF}_${n}" "$em" "$eh" "*" "*" "$end_dow" "$SCRIPTPATH" -qosstop
+        n=$((n+1))
+        if ! cru a "${QOS_CRON_ON}_${n}" "$sm" "$sh" "*" "*" "$cron_dow" "$SCRIPTPATH" -qossync; then
+            IFS="$OLDIFS"
+            _qs_clear_jobs >/dev/null 2>&1 || :
+            return 1
+        fi
+        n=$((n+1))
+        if ! cru a "${QOS_CRON_OFF}_${n}" "$em" "$eh" "*" "*" "$end_dow" "$SCRIPTPATH" -qossync; then
+            IFS="$OLDIFS"
+            _qs_clear_jobs >/dev/null 2>&1 || :
+            return 1
+        fi
 
         # Align immediate state
         if _qs_now_in_window "$sh" "$sm" "$eh" "$em" "$dow"; then aligned=1; fi
@@ -1751,6 +1771,41 @@ _qs_apply_jobs() {
     else
         qos_stop
     fi
+}
+
+qos_schedule_sync_state() {
+    local rec en rest dow st et out ok sh sm eh em
+    local OLDIFS="$IFS"
+
+    [ -n "$SCHEDULE" ] || SCHEDULE="$(am_settings_get "${SCRIPTNAME}"_schedule)"
+    [ -n "$SCHEDULE" ] || return 0
+
+    IFS='|'
+    for rec in $SCHEDULE; do
+        rec="${rec#<}"; rec="${rec%>}"
+        en="${rec%%>*}"; rest="${rec#*>}"
+        dow="${rest%%>*}"; rest="${rest#*>}"
+        st="${rest%%>*}"; et=""; case "$rest" in *'>'*) et="${rest#*>}" ;; esac
+
+        [ "$en" = "1" ] || continue
+        _qs_valid_dow "$dow" || continue
+
+        ok=1
+        out="$(_qs_parse_time "$st")" || ok=0
+        [ "$ok" = 1 ] || continue
+        sh="${out%% *}"; sm="${out#* }"
+        out="$(_qs_parse_time "$et")" || ok=0
+        [ "$ok" = 1 ] || continue
+        eh="${out%% *}"; em="${out#* }"
+
+        if _qs_now_in_window "$sh" "$sm" "$eh" "$em" "$dow"; then
+            IFS="$OLDIFS"
+            qos_start
+            return $?
+        fi
+    done
+    IFS="$OLDIFS"
+    qos_stop
 }
 
 qos_schedule_apply_from_config() {
@@ -2982,6 +3037,9 @@ case "${arg1}" in
 		sed -i "/${SCRIPTNAME}/d" /jffs/scripts/service-event-end  2>/dev/null
 		remove_webui
 		needrestart=2
+		;;
+	'qossync')
+		qos_schedule_sync_state
 		;;
 	'qosstart')
 		qos_start
