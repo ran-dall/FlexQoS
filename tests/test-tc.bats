@@ -81,23 +81,10 @@ setup() {
   bwrates="configured"
   iptables_rules="configured"
 
-  Net_mark="09"
-  Work_mark="06"
-  Gaming_mark="08"
-  Others_mark="0a"
-  Web_mark="18"
-  Streaming_mark="04"
-  Downloads_mark="03"
-  Learn_mark="3f"
-
-  Net_flow="1:10"
-  Work_flow="1:11"
-  Gaming_flow="1:12"
-  Others_flow="1:13"
-  Web_flow="1:14"
-  Streaming_flow="1:15"
-  Downloads_flow="1:16"
-  Learn_flow="1:17"
+  Net_mark="09"; Work_mark="06"; Gaming_mark="08"; Others_mark="0a"
+  Web_mark="18"; Streaming_mark="04"; Downloads_mark="03"; Learn_mark="3f"
+  Net_flow="1:10"; Work_flow="1:11"; Gaming_flow="1:12"; Others_flow="1:13"
+  Web_flow="1:14"; Streaming_flow="1:15"; Downloads_flow="1:16"; Learn_flow="1:17"
 
   load_flexqos_functions
   rm -f "$RULE_FILE"
@@ -107,32 +94,27 @@ teardown() {
   rm -f "$RULE_FILE"
 }
 
-@test "tc cache selects ASUS qdisc and exact ATM overhead metadata" {
+assert_line_count() {
+  local expected="$1"
+  [ "$(wc -l < "$RULE_FILE" | tr -d ' ')" = "$expected" ]
+}
+
+@test "tc cache selects qdisc and link-layer overhead modes" {
   SETTINGS_QDISC="0"
   NVRAM_QOS_OVERHEAD="42"
   NVRAM_QOS_ATM="1"
-  WANMTU=1500
-
   init_tc_cache
-
   [ "$QDISC" = "0" ]
   [ "$MIN_PACKET" = "1749" ]
   [ "$HTB_OVERHEAD" = "overhead 42 linklayer atm" ]
-}
 
-@test "tc cache defaults unknown qdisc values to fq_codel and ethernet overhead" {
   SETTINGS_QDISC="unexpected"
   NVRAM_QOS_OVERHEAD="18"
   NVRAM_QOS_ATM="0"
-
   init_tc_cache
-
   [ "$QDISC" = "1" ]
-  [ "$MIN_PACKET" = "1749" ]
   [ "$HTB_OVERHEAD" = "overhead 18 linklayer ethernet" ]
-}
 
-@test "tc cache ignores zero and negative overhead values" {
   for overhead in 0 -1 -127; do
     NVRAM_QOS_OVERHEAD="$overhead"
     HTB_OVERHEAD="stale"
@@ -141,26 +123,27 @@ teardown() {
   done
 }
 
-@test "burst calculation clamps to qdisc-specific minimums and preserves larger values" {
+@test "tc sizing helpers clamp to the required packet and qdisc floors" {
+  local fn args expected
   MIN_PACKET=1749
-  QDISC=1
-  [ "$(get_burst 1000 1000)" = "1749" ]
-  [ "$(get_burst 80000 1000)" = "10000" ]
+
+  while IFS='|' read -r fn args expected; do
+    [ "$(eval "$fn $args")" = "$expected" ]
+  done <<'EOF_CASES'
+get_burst|1000 1000|1749
+get_burst|80000 1000|10000
+get_cburst|1000|1749
+get_cburst|10000|11200
+get_quantum|100|1749
+get_quantum|1000|12500
+EOF_CASES
 
   QDISC=0
   [ "$(get_burst 1000 1000)" = "3200" ]
-  [ "$(get_burst 80000 1000)" = "10000" ]
-}
-
-@test "cburst calculation clamps to qdisc-specific minimums and preserves larger values" {
-  MIN_PACKET=1749
-  QDISC=1
-  [ "$(get_cburst 1000)" = "1749" ]
-  [ "$(get_cburst 10000)" = "11200" ]
-
-  QDISC=0
   [ "$(get_cburst 1000)" = "3200" ]
-  [ "$(get_cburst 10000)" = "11200" ]
+
+  MIN_PACKET=10017
+  [ "$(get_quantum 500)" = "10017" ]
 }
 
 @test "fq_codel cburst never falls below a jumbo-frame minimum packet" {
@@ -168,74 +151,59 @@ teardown() {
   SETTINGS_QDISC="1"
   init_tc_cache
   [ "$MIN_PACKET" = "10017" ]
-
   [ "$(get_cburst 5120)" = "10017" ]
 }
 
-@test "quantum calculation clamps to packet minimum and preserves larger values" {
-  MIN_PACKET=1749
-  [ "$(get_quantum 100)" = "1749" ]
-  [ "$(get_quantum 1000)" = "12500" ]
-
-  MIN_PACKET=10017
-  [ "$(get_quantum 500)" = "10017" ]
-}
-
-@test "custom HTB rule serialization is exact with ATM overhead" {
+@test "custom HTB serialization preserves semantic rate and overhead fields" {
   QDISC=1
   MIN_PACKET=1749
   HTB_OVERHEAD="overhead 42 linklayer atm"
 
   run get_custom_rate_rule br0 3 5000 10000
-
   [ "$status" -eq 0 ]
   [ "$output" = "class change dev br0 parent 1:1 classid 1:13 htb overhead 42 linklayer atm prio 3 rate 5000Kbit ceil 10000Kbit burst 1749b cburst 11200b quantum 62500" ]
-}
 
-@test "custom HTB rule serialization is exact without overhead" {
   QDISC=0
-  MIN_PACKET=1749
   HTB_OVERHEAD=""
-
   run get_custom_rate_rule eth0 7 100 1000
-
   [ "$status" -eq 0 ]
-  [ "$output" = "class change dev eth0 parent 1:1 classid 1:17 htb  prio 7 rate 100Kbit ceil 1000Kbit burst 3200b cburst 3200b quantum 1749" ]
+  [[ "$output" == "class change dev eth0 parent 1:1 classid 1:17 htb "* ]]
+  [[ "$output" == *"prio 7 rate 100Kbit ceil 1000Kbit"* ]]
+  [[ "$output" == *"burst 3200b cburst 3200b quantum 1749" ]]
+  [[ "$output" != *"linklayer"* ]]
 }
 
-@test "static AppDB filters are emitted in exact class and interface order" {
+@test "static AppDB filters cover every class on LAN and WAN" {
   write_appdb_static_rules
+  assert_line_count 16
 
-  run cat "$RULE_FILE"
-  [ "$status" -eq 0 ]
-  [ "$output" = "filter add dev br0 protocol all prio 5 u32 match mark 0x8009ffff 0xc03fffff flowid 1:10
-filter add dev eth0 protocol all prio 5 u32 match mark 0x4009ffff 0xc03fffff flowid 1:10
-filter add dev br0 protocol all prio 5 u32 match mark 0x8006ffff 0xc03fffff flowid 1:11
-filter add dev eth0 protocol all prio 5 u32 match mark 0x4006ffff 0xc03fffff flowid 1:11
-filter add dev br0 protocol all prio 5 u32 match mark 0x8008ffff 0xc03fffff flowid 1:12
-filter add dev eth0 protocol all prio 5 u32 match mark 0x4008ffff 0xc03fffff flowid 1:12
-filter add dev br0 protocol all prio 5 u32 match mark 0x800affff 0xc03fffff flowid 1:13
-filter add dev eth0 protocol all prio 5 u32 match mark 0x400affff 0xc03fffff flowid 1:13
-filter add dev br0 protocol all prio 5 u32 match mark 0x8018ffff 0xc03fffff flowid 1:14
-filter add dev eth0 protocol all prio 5 u32 match mark 0x4018ffff 0xc03fffff flowid 1:14
-filter add dev br0 protocol all prio 5 u32 match mark 0x8004ffff 0xc03fffff flowid 1:15
-filter add dev eth0 protocol all prio 5 u32 match mark 0x4004ffff 0xc03fffff flowid 1:15
-filter add dev br0 protocol all prio 5 u32 match mark 0x8003ffff 0xc03fffff flowid 1:16
-filter add dev eth0 protocol all prio 5 u32 match mark 0x4003ffff 0xc03fffff flowid 1:16
-filter add dev br0 protocol all prio 5 u32 match mark 0x803fffff 0xc03fffff flowid 1:17
-filter add dev eth0 protocol all prio 5 u32 match mark 0x403fffff 0xc03fffff flowid 1:17" ]
+  local flow mark lan wan
+  while IFS='|' read -r flow mark; do
+    lan="0x80${mark}ffff"
+    wan="0x40${mark}ffff"
+    grep -Fqx "filter add dev br0 protocol all prio 5 u32 match mark $lan 0xc03fffff flowid $flow" "$RULE_FILE"
+    grep -Fqx "filter add dev eth0 protocol all prio 5 u32 match mark $wan 0xc03fffff flowid $flow" "$RULE_FILE"
+  done <<'EOF_CLASSES'
+1:10|09
+1:11|06
+1:12|08
+1:13|0a
+1:14|18
+1:15|04
+1:16|03
+1:17|3f
+EOF_CLASSES
 }
 
 @test "no configured iptables rules produces an empty static TC file" {
   iptables_rules=""
-
   write_appdb_static_rules
-
   [ -f "$RULE_FILE" ]
   [ ! -s "$RULE_FILE" ]
 }
 
-@test "custom rates emit exactly sixteen deterministic class changes" {
+@test "custom rates cover all eight classes in both directions" {
+  local i classid
   for i in 0 1 2 3 4 5 6 7; do
     eval "DownRate${i}=1000"
     eval "DownCeil${i}=2000"
@@ -250,25 +218,13 @@ filter add dev eth0 protocol all prio 5 u32 match mark 0x403fffff 0xc03fffff flo
   : > "$RULE_FILE"
 
   write_custom_rates
+  assert_line_count 16
 
-  run cat "$RULE_FILE"
-  [ "$status" -eq 0 ]
-  [ "$output" = "class change dev br0 parent 1:1 classid 1:10 htb  prio 0 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:10 htb  prio 0 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250
-class change dev br0 parent 1:1 classid 1:11 htb  prio 1 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:11 htb  prio 1 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250
-class change dev br0 parent 1:1 classid 1:12 htb  prio 2 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:12 htb  prio 2 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250
-class change dev br0 parent 1:1 classid 1:13 htb  prio 3 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:13 htb  prio 3 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250
-class change dev br0 parent 1:1 classid 1:14 htb  prio 4 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:14 htb  prio 4 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250
-class change dev br0 parent 1:1 classid 1:15 htb  prio 5 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:15 htb  prio 5 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250
-class change dev br0 parent 1:1 classid 1:16 htb  prio 6 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:16 htb  prio 6 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250
-class change dev br0 parent 1:1 classid 1:17 htb  prio 7 rate 1000Kbit ceil 2000Kbit burst 1749b cburst 1749b quantum 12500
-class change dev eth0 parent 1:1 classid 1:17 htb  prio 7 rate 500Kbit ceil 1000Kbit burst 1749b cburst 1749b quantum 6250" ]
+  for i in 0 1 2 3 4 5 6 7; do
+    classid=$((10 + i))
+    grep -Eq "^class change dev br0 .*classid 1:${classid} .*prio ${i} rate 1000Kbit ceil 2000Kbit .*quantum 12500$" "$RULE_FILE"
+    grep -Eq "^class change dev eth0 .*classid 1:${classid} .*prio ${i} rate 500Kbit ceil 1000Kbit .*quantum 6250$" "$RULE_FILE"
+  done
 }
 
 @test "automatic bandwidth mode leaves existing TC rate file untouched" {

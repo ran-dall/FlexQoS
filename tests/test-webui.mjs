@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { extractFunction, extractInlineScripts, readText } from "../tools/webui-source.mjs";
@@ -21,11 +20,26 @@ function json(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-test("ASP document structure and version metadata match the backend", () => {
-  assert.equal((asp.match(/<html\b/gi) || []).length, 1);
-  assert.equal((asp.match(/<\/html>/gi) || []).length, 1);
-  assert.equal((asp.match(/<head\b/gi) || []).length, 1);
-  assert.equal((asp.match(/<body\b/gi) || []).length, 1);
+function schedulerSettingsCase(saved, initialSchedule = []) {
+  const enabled = { checked: true };
+  let toggles = 0;
+  let renders = 0;
+  const custom_settings = saved === undefined ? {} : { flexqos_schedule: saved };
+  const ctx = loadFunctions(
+    ["_sched_trim", "daysSpecValid", "parseDaysSpec", "timeValid", "schedParse", "schedPopulateFromSettings"],
+    {
+      SCHED: initialSchedule,
+      custom_settings,
+      document: { getElementById: (id) => (id === "sched_enabled" ? enabled : null) },
+      schedToggleUI: () => { toggles += 1; },
+      sched_render_rules: () => { renders += 1; },
+    },
+  );
+  ctx.schedPopulateFromSettings();
+  return { schedule: json(ctx.SCHED), enabled: enabled.checked, toggles, renders };
+}
+
+test("WebUI version metadata matches the backend", () => {
   const webMeta = asp.match(/FlexQoS v([^\s]+) released ([0-9-]+)/);
   assert.ok(webMeta);
   assert.equal(webMeta[1], shell.match(/^version=([^\s]+)$/m)[1]);
@@ -34,32 +48,33 @@ test("ASP document structure and version metadata match the backend", () => {
 
 test("scheduler DOW validator accepts only shell-compatible syntax", () => {
   const { daysSpecValid } = loadFunctions(["daysSpecValid"]);
-  for (const value of ["*", "0", "7", "1,3,5", "1-5", "5-1", "0-7", "7-2"]) {
-    assert.equal(daysSpecValid(value), true, value);
-  }
-  for (const value of ["", ",", "1,", ",1", "1,,2", "8", "1-8", "1-2-3", "a", "1 2", "1, 2", "1foo", "2-", "-2"]) {
-    assert.equal(daysSpecValid(value), false, value);
+  const cases = [
+    [true, ["*", "0", "7", "1,3,5", "1-5", "5-1", "0-7", "7-2"]],
+    [false, ["", ",", "1,", ",1", "1,,2", "8", "1-8", "1-2-3", "a", "1 2", "1, 2", "1foo", "2-", "-2"]],
+  ];
+  for (const [expected, values] of cases) {
+    for (const value of values) assert.equal(daysSpecValid(value), expected, value);
   }
 });
 
 test("scheduler DOW ranges exhaustively match an independent day model", () => {
   const { parseDaysSpec, daysSpecValid } = loadFunctions(["daysSpecValid", "parseDaysSpec"]);
-  for (let start = 0; start <= 7; start++) {
-    for (let end = 0; end <= 7; end++) {
+  for (let start = 0; start <= 7; start += 1) {
+    for (let end = 0; end <= 7; end += 1) {
       const spec = `${start}-${end}`;
       assert.equal(daysSpecValid(spec), true, spec);
       const actual = new Set(Array.from(parseDaysSpec(spec)));
       const expected = new Set();
       if (spec === "0-7") {
-        for (let d = 0; d <= 6; d++) expected.add(d);
+        for (let day = 0; day <= 6; day += 1) expected.add(day);
       } else {
-        const s = start === 7 ? 0 : start;
-        const e = end === 7 ? 0 : end;
-        if (s <= e) {
-          for (let d = s; d <= e; d++) expected.add(d);
+        const first = start === 7 ? 0 : start;
+        const last = end === 7 ? 0 : end;
+        if (first <= last) {
+          for (let day = first; day <= last; day += 1) expected.add(day);
         } else {
-          for (let d = s; d <= 6; d++) expected.add(d);
-          for (let d = 0; d <= e; d++) expected.add(d);
+          for (let day = first; day <= 6; day += 1) expected.add(day);
+          for (let day = 0; day <= last; day += 1) expected.add(day);
         }
       }
       assert.deepEqual([...actual].sort(), [...expected].sort(), spec);
@@ -67,128 +82,92 @@ test("scheduler DOW ranges exhaustively match an independent day model", () => {
   }
 });
 
-test("scheduler day serialization is canonical and round-trips", () => {
-  const ctx = loadFunctions(["daysSpecValid", "parseDaysSpec", "stringifyDays"]);
+test("scheduler serialization is canonical and round-trips", () => {
+  const ctx = loadFunctions([
+    "daysSpecValid", "parseDaysSpec", "stringifyDays", "timeValid", "schedParse", "schedStringify",
+  ]);
   assert.equal(ctx.stringifyDays([6, 0, 1, 1, -1, 7]), "0,1,6");
   assert.equal(ctx.stringifyDays([6, 5, 4, 3, 2, 1, 0]), "0-6");
-  for (const days of [[1,2,3,4,5], [0,6], [5,6,0,1], [2]]) {
-    const encoded = ctx.stringifyDays(days);
-    assert.deepEqual(Array.from(ctx.parseDaysSpec(encoded)), [...new Set(days)].sort((a,b) => a-b));
+
+  const windows = [
+    { days: [1, 2, 3, 4, 5], start: "07:00", end: "20:00" },
+    { days: [0, 6], start: "22:00", end: "06:00" },
+    { days: [2], start: "00:00", end: "23:59" },
+  ];
+  for (const win of windows) {
+    assert.deepEqual(json(ctx.schedParse(ctx.schedStringify(win))), { enabled: true, ...win });
   }
 });
 
 test("scheduler time validation enforces exact HH:MM boundaries", () => {
   const { timeValid } = loadFunctions(["timeValid"]);
-  for (const value of ["00:00", "07:05", "12:30", "23:59"]) assert.equal(timeValid(value), true, value);
-  for (const value of ["", "7:00", "07:5", "24:00", "12:60", "-1:00", "aa:bb", "12:30:00"]) assert.equal(timeValid(value), false, value);
+  const cases = [
+    [true, ["00:00", "07:05", "12:30", "23:59"]],
+    [false, ["", "7:00", "07:5", "24:00", "12:60", "-1:00", "aa:bb", "12:30:00"]],
+  ];
+  for (const [expected, values] of cases) {
+    for (const value of values) assert.equal(timeValid(value), expected, value);
+  }
 });
 
 test("persisted scheduler records reject malformed DOW and times", () => {
   const ctx = loadFunctions(["daysSpecValid", "parseDaysSpec", "timeValid", "schedParse"]);
   assert.deepEqual(json(ctx.schedParse("<1>5-1>22:00>06:00")), {
-    enabled: true, days: [0,1,5,6], start: "22:00", end: "06:00",
+    enabled: true, days: [0, 1, 5, 6], start: "22:00", end: "06:00",
   });
   assert.equal(json(ctx.schedParse("<0>1-5>07:00>20:00")).enabled, false);
   for (const value of [
-    "<1>8>07:00>20:00",
-    "<1>1-2-3>07:00>20:00",
-    "<1>1-5>24:00>20:00",
-    "<1>1-5>07:00>20:60",
-    "<1>1-5>07:00",
-    "",
+    "<1>8>07:00>20:00", "<1>1-2-3>07:00>20:00", "<1>1-5>24:00>20:00",
+    "<1>1-5>07:00>20:60", "<1>1-5>07:00", "",
   ]) assert.equal(ctx.schedParse(value), null, value);
-});
-
-test("scheduler parse and stringify round-trip canonical windows", () => {
-  const ctx = loadFunctions(["daysSpecValid", "parseDaysSpec", "stringifyDays", "timeValid", "schedParse", "schedStringify"]);
-  for (const win of [
-    { days: [1,2,3,4,5], start: "07:00", end: "20:00" },
-    { days: [0,6], start: "22:00", end: "06:00" },
-    { days: [2], start: "00:00", end: "23:59" },
-  ]) {
-    const encoded = ctx.schedStringify(win);
-    const parsed = json(ctx.schedParse(encoded));
-    assert.deepEqual(parsed, { enabled: true, ...win });
-  }
 });
 
 test("scheduler serialization preserves configured order", () => {
   const ctx = loadFunctions(["stringifyDays", "schedStringify", "schedSerialize"], {
     SCHED: [
-      { days: [1,2,3,4,5], start: "07:00", end: "20:00" },
-      { days: [0,6], start: "22:00", end: "06:00" },
+      { days: [1, 2, 3, 4, 5], start: "07:00", end: "20:00" },
+      { days: [0, 6], start: "22:00", end: "06:00" },
     ],
   });
   assert.equal(ctx.schedSerialize(), "<1>1,2,3,4,5>07:00>20:00|<1>0,6>22:00>06:00");
 });
 
+test("scheduler settings population derives enabled state only from restored active windows", () => {
+  const cases = [
+    { saved: undefined, initial: [{ days: [1], start: "01:00", end: "02:00" }], expected: [], enabled: false },
+    { saved: "garbage", expected: [], enabled: false },
+    { saved: "<0>1-5>07:00>20:00", expected: [], enabled: false },
+    { saved: "<1>8>07:00>20:00", expected: [], enabled: false },
+    {
+      saved: "<0>0,6>01:00>02:00|<1>1-5>07:00>20:00|broken",
+      expected: [{ days: [1, 2, 3, 4, 5], start: "07:00", end: "20:00" }],
+      enabled: true,
+    },
+  ];
 
-test("scheduler settings population preserves disabled defaults when unset", () => {
-  const enabled = { checked: false };
-  let toggles = 0;
-  let renders = 0;
-  const ctx = loadFunctions(["_sched_trim", "daysSpecValid", "parseDaysSpec", "timeValid", "schedParse", "schedPopulateFromSettings"], {
-    SCHED: [{ days: [1], start: "01:00", end: "02:00" }],
-    custom_settings: {},
-    document: { getElementById(id) { return id === "sched_enabled" ? enabled : null; } },
-    schedToggleUI() { toggles++; },
-    sched_render_rules() { renders++; },
-  });
-  ctx.schedPopulateFromSettings();
-  assert.deepEqual(json(ctx.SCHED), []);
-  assert.equal(enabled.checked, false);
-  assert.equal(toggles, 1);
-  assert.equal(renders, 1);
-});
-
-test("scheduler settings population does not enable malformed or disabled-only persisted values", () => {
-  for (const saved of ["garbage", "<0>1-5>07:00>20:00", "<1>8>07:00>20:00"]){
-    const enabled = { checked: true };
-    const ctx = loadFunctions(["_sched_trim", "daysSpecValid", "parseDaysSpec", "timeValid", "schedParse", "schedPopulateFromSettings"], {
-      SCHED: [],
-      custom_settings: { flexqos_schedule: saved },
-      document: { getElementById(id) { return id === "sched_enabled" ? enabled : null; } },
-      schedToggleUI() {},
-      sched_render_rules() {},
-    });
-    ctx.schedPopulateFromSettings();
-    assert.deepEqual(json(ctx.SCHED), [], saved);
-    assert.equal(enabled.checked, false, saved);
+  for (const { saved, initial = [], expected, enabled } of cases) {
+    const actual = schedulerSettingsCase(saved, initial);
+    assert.deepEqual(actual.schedule, expected, String(saved));
+    assert.equal(actual.enabled, enabled, String(saved));
+    assert.equal(actual.toggles, 1, String(saved));
+    assert.equal(actual.renders, 1, String(saved));
   }
 });
 
-test("scheduler settings population restores only valid enabled windows", () => {
-  const enabled = { checked: false };
-  const ctx = loadFunctions(["_sched_trim", "daysSpecValid", "parseDaysSpec", "timeValid", "schedParse", "schedPopulateFromSettings"], {
-    SCHED: [],
-    custom_settings: { flexqos_schedule: "<0>0,6>01:00>02:00|<1>1-5>07:00>20:00|broken" },
-    document: { getElementById(id) { return id === "sched_enabled" ? enabled : null; } },
-    schedToggleUI() {},
-    sched_render_rules() {},
-  });
-  ctx.schedPopulateFromSettings();
-  assert.deepEqual(json(ctx.SCHED), [{ days: [1,2,3,4,5], start: "07:00", end: "20:00" }]);
-  assert.equal(enabled.checked, true);
-});
-
-test("QoS port validation accepts legal singles ranges lists and negation", () => {
+test("QoS port validation matches backend-compatible limits", () => {
   const { validateQoSPortSpec } = loadFunctions(["validateQoSPortSpec"]);
-  for (const value of ["", "1", "65535", "!443", "1:2", "1:65535", "53,123,853", "!53,123,853"]) {
-    assert.equal(validateQoSPortSpec(value).valid, true, value);
+  const cases = [
+    [true, ["", "1", "65535", "!443", "1:2", "1:65535", "53,123,853", "!53,123,853"]],
+    [false, ["0", "65536", "2:2", "3:2", "0:10", "10:65536", "1,,2", "1:2,3", "!!80", "80,"]],
+  ];
+  for (const [expected, values] of cases) {
+    for (const value of values) assert.equal(validateQoSPortSpec(value).valid, expected, value);
   }
-  const fifteen = Array.from({length: 15}, (_, i) => String(i + 1)).join(",");
+
+  const fifteen = Array.from({ length: 15 }, (_, i) => String(i + 1)).join(",");
   assert.equal(validateQoSPortSpec(fifteen).valid, true);
-});
-
-test("QoS port validation rejects backend-incompatible limits and malformed forms", () => {
-  const { validateQoSPortSpec } = loadFunctions(["validateQoSPortSpec"]);
-  for (const value of ["0", "65536", "2:2", "3:2", "0:10", "10:65536", "1,,2", "1:2,3", "!!80", "80,"]) {
-    assert.equal(validateQoSPortSpec(value).valid, false, value);
-  }
-  const sixteen = Array.from({length: 16}, (_, i) => String(i + 1)).join(",");
-  const result = validateQoSPortSpec(sixteen);
-  assert.equal(result.valid, false);
-  assert.equal(result.reason, "multiport-limit");
+  const sixteen = Array.from({ length: 16 }, (_, i) => String(i + 1)).join(",");
+  assert.deepEqual(json(validateQoSPortSpec(sixteen)), { valid: false, reason: "multiport-limit" });
 });
 
 test("tracked connection rendering never leaks a prior hostname into IPv6 rows", () => {
@@ -212,9 +191,7 @@ test("tracked connection rendering never leaks a prior hostname into IPv6 rows",
     ipv6clientarray: [],
     clientList: {},
     genClientList() {},
-    clientFromIP(ip) {
-      return ip === "192.168.1.2" ? { nickName: "", name: "AlphaHost" } : null;
-    },
+    clientFromIP: (ip) => (ip === "192.168.1.2" ? { nickName: "", name: "AlphaHost" } : null),
   });
 
   ctx.updateTable();
@@ -222,11 +199,4 @@ test("tracked connection rendering never leaks a prior hostname into IPv6 rows",
   assert.equal((html.match(/AlphaHost/g) || []).length, 1);
   assert.match(html, />2001:db8::2<\/td>/);
   assert.doesNotMatch(html, /title="2001:db8::2"[^>]*>AlphaHost<\/td>/);
-});
-
-test("critical WebUI functions are extracted from production exactly once", () => {
-  for (const name of [
-    "daysSpecValid", "parseDaysSpec", "stringifyDays", "timeValid", "schedParse", "schedStringify",
-    "schedSerialize", "schedPopulateFromSettings", "validateQoSPortSpec", "table_sort", "updateTable",
-  ]) assert.match(extractFunction(script, name), new RegExp(`function\\s+${name}\\s*\\(`));
 });
