@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Lint FlexQoS shell code with ShellCheck"
+
+set -euo pipefail
+
+cd "$MISE_PROJECT_ROOT"
+
+shellcheck -s sh flexqos.sh
