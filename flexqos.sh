@@ -2511,51 +2511,105 @@ uninstall() {
 	needrestart=1
 } # uninstall
 
-get_config() {
+_config_valid_bwrates() {
+	# Four '<' groups, eight '>'-separated integer percentages per group.
+	# Reject leading zeroes so later shell arithmetic cannot reinterpret values.
+	printf '%s\n' "${1:-}" | awk '
+	NR != 1 { exit 1 }
+	{
+		if ($0 !~ /^</) exit 1
+		n = split(substr($0, 2), groups, "<")
+		if (n != 4) exit 1
+		for (g = 1; g <= 4; g++) {
+			m = split(groups[g], values, ">")
+			if (m != 8) exit 1
+			for (i = 1; i <= 8; i++) {
+				if (values[i] !~ /^[1-9][0-9]*$/) exit 1
+				if ((values[i] + 0) < 1 || (values[i] + 0) > 100) exit 1
+			}
+		}
+		valid = 1
+	}
+	END { exit(valid && NR == 1 ? 0 : 1) }
+	'
+} # _config_valid_bwrates
+
+_config_convert_legacy_bandwidth() {
 	local drp0 drp1 drp2 drp3 drp4 drp5 drp6 drp7
 	local dcp0 dcp1 dcp2 dcp3 dcp4 dcp5 dcp6 dcp7
 	local urp0 urp1 urp2 urp3 urp4 urp5 urp6 urp7
 	local ucp0 ucp1 ucp2 ucp3 ucp4 ucp5 ucp6 ucp7
+	local legacy
 
-	# Read settings from Addon API config file. If not defined, set default values
+	legacy="${1:-}"
+	_config_valid_bwrates "${legacy}" || return 1
+
+	read -r \
+		drp0 drp1 drp2 drp3 drp4 drp5 drp6 drp7 \
+		dcp0 dcp1 dcp2 dcp3 dcp4 dcp5 dcp6 dcp7 \
+		urp0 urp1 urp2 urp3 urp4 urp5 urp6 urp7 \
+		ucp0 ucp1 ucp2 ucp3 ucp4 ucp5 ucp6 ucp7 \
+<<EOF
+$(printf '%s\n' "${legacy}" | sed 's/^<//;s/[<>]/ /g')
+EOF
+
+	printf '<%s>%s>%s>%s>%s>%s>%s>%s<%s>%s>%s>%s>%s>%s>%s>%s<%s>%s>%s>%s>%s>%s>%s>%s<%s>%s>%s>%s>%s>%s>%s>%s' \
+		"${drp0}" "${drp2}" "${drp5}" "${drp1}" "${drp4}" "${drp7}" "${drp3}" "${drp6}" \
+		"${dcp0}" "${dcp2}" "${dcp5}" "${dcp1}" "${dcp4}" "${dcp7}" "${dcp3}" "${dcp6}" \
+		"${urp0}" "${urp2}" "${urp5}" "${urp1}" "${urp4}" "${urp7}" "${urp3}" "${urp6}" \
+		"${ucp0}" "${ucp2}" "${ucp5}" "${ucp1}" "${ucp4}" "${ucp7}" "${ucp3}" "${ucp6}"
+} # _config_convert_legacy_bandwidth
+
+get_config() {
+	local default_bwrates legacy_bandwidth converted_bwrates
+
+	default_bwrates="<5>15>30>20>10>5>10>5<100>100>100>100>100>100>100>100<5>15>10>20>10>5>30>5<100>100>100>100>100>100>100>100"
+
+	# Read settings from Addon API config file. If not defined, set default values.
 	iptables_rules="$(am_settings_get "${SCRIPTNAME}"_iptables)"
 	if [ -z "${iptables_rules}" ]; then
 		iptables_rules="<>>udp>>500,4500>>3<>>udp>16384:16415>>>3<>>tcp>>119,563>>5<>>tcp>>80,443>08****>5"
 	elif [ "${iptables_rules}" = "0" ]; then
 		iptables_rules=""
 	fi
+
 	appdb_rules="$(am_settings_get "${SCRIPTNAME}"_appdb)"
 	if [ -z "${appdb_rules}" ]; then
 		appdb_rules="<000000>6<00006B>6<0D0007>5<0D0086>5<0D00A0>5<12003F>4<13****>4<14****>4"
 	fi
+
 	bwrates="$(am_settings_get "${SCRIPTNAME}"_bwrates)"
+	if [ -n "${bwrates}" ] && ! _config_valid_bwrates "${bwrates}"; then
+		logmsg "Ignoring invalid ${SCRIPTNAME}_bwrates setting"
+		bwrates=""
+	fi
+
 	if [ -z "${bwrates}" ]; then
-		# New settings not set
-		if [ -z "$(am_settings_get "${SCRIPTNAME}"_bandwidth)" ]; then
-			# Old settings not set either, so set the defaults
-			bwrates="<5>15>30>20>10>5>10>5<100>100>100>100>100>100>100>100<5>15>10>20>10>5>30>5<100>100>100>100>100>100>100>100"
-		else
-			# Convert bandwidth to bwrates by reading existing values into the re-sorted order
-			read -r \
-				drp0 drp1 drp2 drp3 drp4 drp5 drp6 drp7 \
-				dcp0 dcp1 dcp2 dcp3 dcp4 dcp5 dcp6 dcp7 \
-				urp0 urp1 urp2 urp3 urp4 urp5 urp6 urp7 \
-				ucp0 ucp1 ucp2 ucp3 ucp4 ucp5 ucp6 ucp7 \
-<<EOF
-$(am_settings_get "${SCRIPTNAME}"_bandwidth | sed 's/^<//g;s/[<>]/ /g')
-EOF
-			am_settings_set "${SCRIPTNAME}"_bwrates "<${drp0}>${drp2}>${drp5}>${drp1}>${drp4}>${drp7}>${drp3}>${drp6}<${dcp0}>${dcp2}>${dcp5}>${dcp1}>${dcp4}>${dcp7}>${dcp3}>${dcp6}<${urp0}>${urp2}>${urp5}>${urp1}>${urp4}>${urp7}>${urp3}>${urp6}<${ucp0}>${ucp2}>${ucp5}>${ucp1}>${ucp4}>${ucp7}>${ucp3}>${ucp6}"
-			bwrates="<${drp0}>${drp2}>${drp5}>${drp1}>${drp4}>${drp7}>${drp3}>${drp6}<${dcp0}>${dcp2}>${dcp5}>${dcp1}>${dcp4}>${dcp7}>${dcp3}>${dcp6}<${urp0}>${urp2}>${urp5}>${urp1}>${urp4}>${urp7}>${urp3}>${urp6}<${ucp0}>${ucp2}>${ucp5}>${ucp1}>${ucp4}>${ucp7}>${ucp3}>${ucp6}"
-			if [ "${bwrates}" != "<5>15>30>20>10>5>10>5<100>100>100>100>100>100>100>100<5>15>10>20>10>5>30>5<100>100>100>100>100>100>100>100" ]; then
-				am_settings_set "${SCRIPTNAME}"_bwrates "<${drp0}>${drp2}>${drp5}>${drp1}>${drp4}>${drp7}>${drp3}>${drp6}<${dcp0}>${dcp2}>${dcp5}>${dcp1}>${dcp4}>${dcp7}>${dcp3}>${dcp6}<${urp0}>${urp2}>${urp5}>${urp1}>${urp4}>${urp7}>${urp3}>${urp6}<${ucp0}>${ucp2}>${ucp5}>${ucp1}>${ucp4}>${ucp7}>${ucp3}>${ucp6}"
+		legacy_bandwidth="$(am_settings_get "${SCRIPTNAME}"_bandwidth)"
+		if [ -z "${legacy_bandwidth}" ]; then
+			bwrates="${default_bwrates}"
+		elif converted_bwrates="$(_config_convert_legacy_bandwidth "${legacy_bandwidth}")"; then
+			bwrates="${converted_bwrates}"
+			if [ "${bwrates}" != "${default_bwrates}" ]; then
+				am_settings_set "${SCRIPTNAME}"_bwrates "${bwrates}"
 			fi
 			sed -i "/^${SCRIPTNAME}_bandwidth /d" /jffs/addons/custom_settings.txt
+		else
+			# Preserve malformed legacy input for recovery instead of deleting it.
+			logmsg "Ignoring invalid ${SCRIPTNAME}_bandwidth setting"
+			bwrates="${default_bwrates}"
 		fi
 	fi
+
 	fccontrol="$(am_settings_get "${SCRIPTNAME}"_fccontrol)"
-	if [ -z "${fccontrol}" ]; then
-		fccontrol="0" # default to Off from GUI
-	fi
+	case "${fccontrol}" in
+		0|1|2) ;;
+		'') fccontrol="0" ;;
+		*)
+			logmsg "Ignoring invalid ${SCRIPTNAME}_fccontrol setting"
+			fccontrol="0"
+			;;
+	esac
 } # get_config
 
 normalize_iptables_rules() {

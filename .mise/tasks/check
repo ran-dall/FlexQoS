@@ -9,6 +9,7 @@ checks=(
   check-pr-source
   shellcheck
   lint-webui
+  test-config
   test-iptables
   test-schedule
   test-tc
