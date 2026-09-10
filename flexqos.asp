@@ -761,10 +761,11 @@ function schedPopulateFromSettings(){
         end: rec.end
       });
     });
-
-    document.getElementById("sched_enabled").checked = true;
-    schedToggleUI();
   }
+
+  var enabled = document.getElementById("sched_enabled");
+  if (enabled) enabled.checked = (SCHED.length > 0);
+  schedToggleUI();
   sched_render_rules();
 }
 

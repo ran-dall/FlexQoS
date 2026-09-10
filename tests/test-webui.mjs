@@ -122,6 +122,55 @@ test("scheduler serialization preserves configured order", () => {
   assert.equal(ctx.schedSerialize(), "<1>1,2,3,4,5>07:00>20:00|<1>0,6>22:00>06:00");
 });
 
+
+test("scheduler settings population preserves disabled defaults when unset", () => {
+  const enabled = { checked: false };
+  let toggles = 0;
+  let renders = 0;
+  const ctx = loadFunctions(["_sched_trim", "daysSpecValid", "parseDaysSpec", "timeValid", "schedParse", "schedPopulateFromSettings"], {
+    SCHED: [{ days: [1], start: "01:00", end: "02:00" }],
+    custom_settings: {},
+    document: { getElementById(id) { return id === "sched_enabled" ? enabled : null; } },
+    schedToggleUI() { toggles++; },
+    sched_render_rules() { renders++; },
+  });
+  ctx.schedPopulateFromSettings();
+  assert.deepEqual(json(ctx.SCHED), []);
+  assert.equal(enabled.checked, false);
+  assert.equal(toggles, 1);
+  assert.equal(renders, 1);
+});
+
+test("scheduler settings population does not enable malformed or disabled-only persisted values", () => {
+  for (const saved of ["garbage", "<0>1-5>07:00>20:00", "<1>8>07:00>20:00"]){
+    const enabled = { checked: true };
+    const ctx = loadFunctions(["_sched_trim", "daysSpecValid", "parseDaysSpec", "timeValid", "schedParse", "schedPopulateFromSettings"], {
+      SCHED: [],
+      custom_settings: { flexqos_schedule: saved },
+      document: { getElementById(id) { return id === "sched_enabled" ? enabled : null; } },
+      schedToggleUI() {},
+      sched_render_rules() {},
+    });
+    ctx.schedPopulateFromSettings();
+    assert.deepEqual(json(ctx.SCHED), [], saved);
+    assert.equal(enabled.checked, false, saved);
+  }
+});
+
+test("scheduler settings population restores only valid enabled windows", () => {
+  const enabled = { checked: false };
+  const ctx = loadFunctions(["_sched_trim", "daysSpecValid", "parseDaysSpec", "timeValid", "schedParse", "schedPopulateFromSettings"], {
+    SCHED: [],
+    custom_settings: { flexqos_schedule: "<0>0,6>01:00>02:00|<1>1-5>07:00>20:00|broken" },
+    document: { getElementById(id) { return id === "sched_enabled" ? enabled : null; } },
+    schedToggleUI() {},
+    sched_render_rules() {},
+  });
+  ctx.schedPopulateFromSettings();
+  assert.deepEqual(json(ctx.SCHED), [{ days: [1,2,3,4,5], start: "07:00", end: "20:00" }]);
+  assert.equal(enabled.checked, true);
+});
+
 test("QoS port validation accepts legal singles ranges lists and negation", () => {
   const { validateQoSPortSpec } = loadFunctions(["validateQoSPortSpec"]);
   for (const value of ["", "1", "65535", "!443", "1:2", "1:65535", "53,123,853", "!53,123,853"]) {
@@ -178,6 +227,6 @@ test("tracked connection rendering never leaks a prior hostname into IPv6 rows",
 test("critical WebUI functions are extracted from production exactly once", () => {
   for (const name of [
     "daysSpecValid", "parseDaysSpec", "stringifyDays", "timeValid", "schedParse", "schedStringify",
-    "schedSerialize", "validateQoSPortSpec", "table_sort", "updateTable",
+    "schedSerialize", "schedPopulateFromSettings", "validateQoSPortSpec", "table_sort", "updateTable",
   ]) assert.match(extractFunction(script, name), new RegExp(`function\\s+${name}\\s*\\(`));
 });
