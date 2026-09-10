@@ -672,11 +672,75 @@ get_flowid() {
 } # get_flowid
 
 Is_Valid_CIDR() {
-	/bin/grep -qE '^[!]?([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$'
+	# Validate IPv4/CIDR syntax and numeric bounds, with optional leading negation.
+	awk '
+	function valid_octet(value) {
+		return value ~ /^[0-9]+$/ && value + 0 >= 0 && value + 0 <= 255
+	}
+	BEGIN { valid = 0; invalid = 0 }
+	NR > 1 { invalid = 1; next }
+	{
+		value = $0
+		sub(/^!/, "", value)
+		if (value == "") { invalid = 1; next }
+
+		parts = split(value, cidr, "/")
+		if (parts > 2) { invalid = 1; next }
+		if (parts == 2 && (cidr[2] !~ /^[0-9]+$/ || cidr[2] + 0 < 0 || cidr[2] + 0 > 32)) {
+			invalid = 1
+			next
+		}
+
+		if (split(cidr[1], octets, /[.]/) != 4) { invalid = 1; next }
+		for (i = 1; i <= 4; i++) {
+			if (!valid_octet(octets[i])) { invalid = 1; next }
+		}
+		valid = 1
+	}
+	END { exit (valid && !invalid) ? 0 : 1 }
+	'
 } # Is_Valid_CIDR
 
 Is_Valid_Port() {
-	/bin/grep -qE '^[!]?([0-9]{1,5})((:[0-9]{1,5})?|(,[0-9]{1,5})*)$'
+	# Validate one port, an ordered range, or an iptables multiport list.
+	# multiport accepts at most 15 discrete ports per rule.
+	awk '
+	function valid_port(value) {
+		return value ~ /^[0-9]+$/ && value + 0 >= 1 && value + 0 <= 65535
+	}
+	BEGIN { valid = 0; invalid = 0 }
+	NR > 1 { invalid = 1; next }
+	{
+		value = $0
+		sub(/^!/, "", value)
+		if (value == "") { invalid = 1; next }
+
+		if (index(value, ",")) {
+			if (index(value, ":")) { invalid = 1; next }
+			count = split(value, ports, ",")
+			if (count < 2 || count > 15) { invalid = 1; next }
+			for (i = 1; i <= count; i++) {
+				if (!valid_port(ports[i])) { invalid = 1; next }
+			}
+			valid = 1
+			next
+		}
+
+		if (index(value, ":")) {
+			count = split(value, ports, ":")
+			if (count != 2 || !valid_port(ports[1]) || !valid_port(ports[2]) || ports[1] + 0 >= ports[2] + 0) {
+				invalid = 1
+				next
+			}
+			valid = 1
+			next
+		}
+
+		if (valid_port(value)) valid = 1
+		else invalid = 1
+	}
+	END { exit (valid && !invalid) ? 0 : 1 }
+	'
 } # Is_Valid_Port
 
 Is_Valid_Mark() {
@@ -838,6 +902,20 @@ parse_iptablerule() {
 	local tmpMark DOWN_mark UP_mark
 	local DOWN_dst UP_dst Dst_mark
 	local cat id
+
+	# Reject malformed nonempty criteria instead of silently dropping them and
+	# accidentally broadening the rule that gets installed.
+	[ -z "${1}" ] || echo "${1}" | Is_Valid_CIDR || return 0
+	[ -z "${2}" ] || echo "${2}" | Is_Valid_CIDR || return 0
+	[ -z "${4}" ] || echo "${4}" | Is_Valid_Port || return 0
+	[ -z "${5}" ] || echo "${5}" | Is_Valid_Port || return 0
+	[ -z "${6}" ] || echo "${6}" | Is_Valid_Mark || return 0
+	case "${3}" in
+		tcp|udp|both) ;;
+		'') [ -z "${4}${5}" ] || return 0 ;;
+		*) return 0 ;;
+	esac
+
 	# local IP
 	# Check for acceptable IP format
 	if echo "${1}" | Is_Valid_CIDR; then
@@ -848,7 +926,9 @@ parse_iptablerule() {
 		if ! echo "${2}" | Is_Valid_CIDR; then
 			# Alternate syntax for IPv6 ipset matching
 			CIDR="${1#!}"
-			create_ipset "${CIDR}" # 2>/dev/null
+			if [ "${8:-}" != "validate" ]; then
+				create_ipset "${CIDR}" # 2>/dev/null
+			fi
 			DOWN_Lip6="$(format_ipset_arg "${1}" "dst")"
 			UP_Lip6="$(format_ipset_arg "${1}" "src")"
 		fi
@@ -871,16 +951,22 @@ parse_iptablerule() {
 	fi
 
 	# protocol (required when port specified)
-	if [ "${3}" = "tcp" ] || [ "${3}" = "udp" ]; then
-		# print protocol directly
-		PROTOS="${3}"
-	elif [ "${#4}" -gt "1" ] || [ "${#5}" -gt "1" ]; then
-		# proto=both & ports are defined
-		PROTOS="both"
-	else
-		# neither proto nor ports defined
-		PROTOS="all"
-	fi
+	case "${3}" in
+		tcp|udp)
+			PROTOS="${3}"
+			;;
+		both)
+			if [ -n "${4}${5}" ]; then
+				PROTOS="both"
+			else
+				# With no ports, preserve the historical meaning of BOTH as all protocols.
+				PROTOS="all"
+			fi
+			;;
+		*)
+			PROTOS="all"
+			;;
+	esac
 
 	# local port
 	if echo "${4}" | Is_Valid_Port; then
@@ -2363,7 +2449,6 @@ uninstall() {
 } # uninstall
 
 get_config() {
-	local iptables_rules_defined
 	local drp0 drp1 drp2 drp3 drp4 drp5 drp6 drp7
 	local dcp0 dcp1 dcp2 dcp3 dcp4 dcp5 dcp6 dcp7
 	local urp0 urp1 urp2 urp3 urp4 urp5 urp6 urp7
@@ -2410,31 +2495,112 @@ EOF
 	fi
 } # get_config
 
-validate_iptables_rules() {
-	# Basic check to ensure the number of rules present in the iptables chain matches the number of expected rules
-	# Does not verify that the rules present match the rules in the config, since the config hasn't been parsed at this point.
-	local iptables_rules_defined iptables_rules_expected iptables_rulespresent
+normalize_iptables_rules() {
+	# Normalize generated and `iptables -S` forms before exact comparison.
+	# xtables can canonicalize host CIDRs, omit `-p all`, and serialize
+	# --set-mark as --set-xmark even when the rules are semantically identical.
+	awk '
+	function pow2(n, value, i) {
+		value = 1
+		for (i = 0; i < n; i++) value *= 2
+		return value
+	}
+	function normalize_cidr(value, parts, cidr, octets, prefix, ipnum, block, a, b, c, d, rem) {
+		if (value !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/) return value
+		parts = split(value, cidr, "/")
+		prefix = (parts == 2) ? cidr[2] + 0 : 32
+		split(cidr[1], octets, /[.]/)
+		ipnum = (((octets[1] + 0) * 256 + (octets[2] + 0)) * 256 + (octets[3] + 0)) * 256 + (octets[4] + 0)
+		if (prefix < 32) {
+			block = pow2(32 - prefix)
+			ipnum = int(ipnum / block) * block
+		}
+		a = int(ipnum / 16777216); rem = ipnum - a * 16777216
+		b = int(rem / 65536); rem -= b * 65536
+		c = int(rem / 256); d = rem - c * 256
+		if (prefix == 32) return sprintf("%d.%d.%d.%d", a, b, c, d)
+		return sprintf("%d.%d.%d.%d/%d", a, b, c, d, prefix)
+	}
+	{
+		gsub(/[[:space:]]+/, " ")
+		sub(/^ /, "")
+		sub(/ $/, "")
+		count = split($0, fields, " ")
+		out = ""
+		for (i = 1; i <= count; i++) {
+			token = fields[i]
+			if (token == "--set-xmark") token = "--set-mark"
+			if (token == "-p" && i < count && fields[i + 1] == "all") {
+				i++
+				continue
+			}
+			if ((token == "-s" || token == "-d") && i < count) {
+				out = out (out == "" ? "" : " ") token
+				i++
+				token = normalize_cidr(fields[i])
+			}
+			out = out (out == "" ? "" : " ") token
+		}
+		if (out != "") print out
+	}
+	'
+} # normalize_iptables_rules
 
-	if [ -z "${iptables_rules}" ]; then
-		return 0
-	fi
-	iptables_rules_defined="$(echo "${iptables_rules}" | sed 's/</\n/g' | /bin/grep -vc "^$")"
-	iptables_rules_expected=$((iptables_rules_defined+1)) # 1 download and upload rule per user rule, plus 1 for chain definition
-	iptables_rulespresent="$(iptables -t mangle -S ${SCRIPTNAME_DISPLAY}_down | wc -l)" # count rules in chain plus chain itself
-	if [ "${iptables_rulespresent}" -lt "${iptables_rules_expected}" ]; then
+validate_iptables_rules() {
+	# Compare the complete ordered ruleset in every managed chain against what
+	# the production parser generates. Fail closed if chain state cannot be read.
+	local ipv4_down_expected ipv4_up_expected ipv4_down_present ipv4_up_present
+	local ipv6_down_expected ipv6_up_expected ipv6_down_present ipv6_up_present
+	local ipv4_down_raw ipv4_up_raw ipv6_down_raw ipv6_up_raw
+
+	# Validation must not mutate live ipsets. The validate mode suppresses
+	# create_ipset() side effects while preserving the generated chain rules.
+	if ! write_iptables_rules validate; then
+		rm -f "/tmp/${SCRIPTNAME}_iprules"
 		return 1
-	else
-		return 0
 	fi
+
+	ipv4_down_expected="$(/bin/grep "^iptables -t mangle -A ${SCRIPTNAME_DISPLAY}_down " "/tmp/${SCRIPTNAME}_iprules" | sed -E 's/^iptables -t mangle //' | normalize_iptables_rules)"
+	ipv4_up_expected="$(/bin/grep "^iptables -t mangle -A ${SCRIPTNAME_DISPLAY}_up " "/tmp/${SCRIPTNAME}_iprules" | sed -E 's/^iptables -t mangle //' | normalize_iptables_rules)"
+	if [ "${IPv6_enabled}" != "disabled" ]; then
+		ipv6_down_expected="$(/bin/grep "^ip6tables -t mangle -A ${SCRIPTNAME_DISPLAY}_down " "/tmp/${SCRIPTNAME}_iprules" | sed -E 's/^ip6tables -t mangle //' | normalize_iptables_rules)"
+		ipv6_up_expected="$(/bin/grep "^ip6tables -t mangle -A ${SCRIPTNAME_DISPLAY}_up " "/tmp/${SCRIPTNAME}_iprules" | sed -E 's/^ip6tables -t mangle //' | normalize_iptables_rules)"
+	fi
+	rm -f "/tmp/${SCRIPTNAME}_iprules"
+
+	if ! ipv4_down_raw="$(iptables -t mangle -S "${SCRIPTNAME_DISPLAY}_down" 2>/dev/null)" ||
+	   ! ipv4_up_raw="$(iptables -t mangle -S "${SCRIPTNAME_DISPLAY}_up" 2>/dev/null)"; then
+		return 1
+	fi
+	ipv4_down_present="$(printf '%s\n' "${ipv4_down_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_down " | normalize_iptables_rules)"
+	ipv4_up_present="$(printf '%s\n' "${ipv4_up_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_up " | normalize_iptables_rules)"
+
+	if [ "${ipv4_down_present}" != "${ipv4_down_expected}" ] ||
+	   [ "${ipv4_up_present}" != "${ipv4_up_expected}" ]; then
+		return 1
+	fi
+
+	if [ "${IPv6_enabled}" != "disabled" ]; then
+		if ! ipv6_down_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_down" 2>/dev/null)" ||
+		   ! ipv6_up_raw="$(ip6tables -t mangle -S "${SCRIPTNAME_DISPLAY}_up" 2>/dev/null)"; then
+			return 1
+		fi
+		ipv6_down_present="$(printf '%s\n' "${ipv6_down_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_down " | normalize_iptables_rules)"
+		ipv6_up_present="$(printf '%s\n' "${ipv6_up_raw}" | /bin/grep "^-A ${SCRIPTNAME_DISPLAY}_up " | normalize_iptables_rules)"
+
+		if [ "${ipv6_down_present}" != "${ipv6_down_expected}" ] ||
+		   [ "${ipv6_up_present}" != "${ipv6_up_expected}" ]; then
+			return 1
+		fi
+	fi
+
+	return 0
 } # validate_iptables_rules
 
 write_iptables_rules() {
 	# loop through iptables rules and write an iptables command to a temporary file for later execution
-	local localip remoteip proto lport rport mark class
-
-	if [ -z "${iptables_rules}" ]; then
-		return 0
-	fi
+	local localip remoteip proto lport rport mark class validation_mode
+	validation_mode="${1:-}"
 
 	{
 		printf "iptables -t mangle -F %s 2>/dev/null\n" "${SCRIPTNAME_DISPLAY}_down"
@@ -2445,13 +2611,19 @@ write_iptables_rules() {
 		fi
 	} > "/tmp/${SCRIPTNAME}_iprules"
 
+	# An empty configuration still needs the flush commands above so stale
+	# custom chain rules can be removed when validation finds any.
+	if [ -z "${iptables_rules}" ]; then
+		return 0
+	fi
+
 	# read the rules, 1 per line and break into separate fields
 	printf '%s\n' "${iptables_rules}" | sed 's/</\n/g' | while IFS=">" read -r localip remoteip proto lport rport mark class
 	do
 		# Ensure at least one criteria field is populated
 		if [ -n "${localip}${remoteip}${proto}${lport}${rport}${mark}" ]; then
 			# Process the rule and save the resulting commands to the temporary script file
-			parse_iptablerule "${localip}" "${remoteip}" "${proto}" "${lport}" "${rport}" "${mark}" "${class}" >> "/tmp/${SCRIPTNAME}_iprules" 2>/dev/null
+			parse_iptablerule "${localip}" "${remoteip}" "${proto}" "${lport}" "${rport}" "${mark}" "${class}" "${validation_mode}" >> "/tmp/${SCRIPTNAME}_iprules" 2>/dev/null
 		fi
 	done
 } # write_iptables_rules
